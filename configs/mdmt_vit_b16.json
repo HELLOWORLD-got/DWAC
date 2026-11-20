@@ -1,0 +1,25 @@
+{
+  "model": {
+    "backbone": "vit_b16",
+    "num_views": 2,
+    "num_classes": 1,
+    "num_queries": 256
+  },
+  "data": {
+    "train": "data/processed/MDMT/train.jsonl",
+    "val": "data/processed/MDMT/val.jsonl",
+    "test": "data/processed/MDMT/test_official.jsonl",
+    "height": 416,
+    "width": 720,
+    "augment": true
+  },
+  "training": {
+    "workers": 4,
+    "seed": 42
+  },
+  "evaluation": {
+    "confidence_threshold": 0.5,
+    "iou_threshold": 0.5,
+    "ucr_threshold": 0.6
+  }
+}
