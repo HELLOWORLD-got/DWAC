@@ -10,8 +10,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import torch
 from torchvision.ops import box_iou
 
+from training.data import MultiViewDataset
 from training.engine import build_model, forward_loss, freeze_training_bn, load_config
-from training.engine import make_loader, seed_all
+from training.engine import seed_all
 from training.metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
 
@@ -34,6 +35,9 @@ def measure(net, criterion, images, target, device, config):
     common = visible.all(dim=0)
     filtered = valid & pred["present"][:, :, None]
     association = assoc.compute()
+    class_probs = outputs["class_logits"][0].softmax(-1)
+    foreground_probs = 1 - class_probs[:, -1]
+    confidences = outputs["confidences"][0]
     return {
         "loss": {key: value.item() for key, value in loss.items()},
         "visible_gt_boxes": int(visible.sum()),
@@ -42,6 +46,11 @@ def measure(net, criterion, images, target, device, config):
         "shared_gt": int(common.sum()),
         "raw_same_query_hits": int(valid.all(dim=0).any(dim=0).sum()),
         "kept_same_query_hits": int(filtered.all(dim=0).any(dim=0).sum()),
+        "foreground_queries": int((class_probs.argmax(-1) != class_probs.shape[-1] - 1).sum()),
+        "mean_foreground_probability": foreground_probs.mean().item(),
+        "max_foreground_probability": foreground_probs.max().item(),
+        "mean_visibility_probability": confidences.mean().item(),
+        "max_visibility_probability": confidences.max().item(),
         **detect.compute(),
         "MDA": association["MDA"],
         "true_associations": association["true_associations"],
@@ -54,21 +63,32 @@ def main():
     p.add_argument("--config", default="configs/mdmt_resnet50.json")
     p.add_argument("--device", default="cpu")
     p.add_argument("--index", type=int, default=334, help="Zero-based training manifest index")
+    p.add_argument("--num-queries", type=int, help="Override query count for this one-pair diagnostic")
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--report-every", type=int, default=50)
     p.add_argument("--output", default="runs/author_overfit/report.json")
     args = p.parse_args()
     if args.index < 0 or min(args.steps, args.report_every) < 1:
         p.error("--index must be nonnegative, and reporting interval and steps must be positive")
+    if args.num_queries is not None and args.num_queries < 1:
+        p.error("--num-queries must be positive")
     cfg = load_config(args.config)
     cfg["data"]["augment"] = False
+    if args.num_queries is not None:
+        cfg["model"]["num_queries"] = args.num_queries
     device = torch.device(args.device)
     settings = cfg["training"]
     seed_all(settings["seed"])
-    loader = make_loader(cfg, "train", device, batch_size=1, workers=0)
-    if args.index >= len(loader.dataset):
-        p.error(f"--index must be below {len(loader.dataset)}")
-    images, target = loader.dataset[args.index]
+    data, model = cfg["data"], cfg["model"]
+    # Check capacity on the selected pair only. This makes the paper's N=25
+    # testable without admitting a 25-query model to the full MDMT loader.
+    dataset = MultiViewDataset(data["train"], size=(data["height"], data["width"]),
+                               num_views=model["num_views"], num_classes=model["num_classes"])
+    if args.index >= len(dataset):
+        p.error(f"--index must be below {len(dataset)}")
+    images, target = dataset[args.index]
+    if len(target["labels"]) > model["num_queries"]:
+        p.error(f"Sample has {len(target['labels'])} instances but only {model['num_queries']} queries")
     images = [image.unsqueeze(0).to(device) for image in images]
     net = build_model(cfg, initialize_weights=True).to(device)
     criterion = net.build_criterion()
