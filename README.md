@@ -50,6 +50,12 @@ CUDA_VISIBLE_DEVICES=1 python tools/overfit.py --device cuda --steps 600
 看 `raw_box_hits`（忽略分数的单视角框命中）、`raw_same_query_hits`（忽略分数的双视角同槽命中）、
 `AP50` 和 `true_associations` 能否持续改善。此测试只衡量模型记住训练样本的能力。
 
+完整 MDMT 需要保留足够的查询。若稀疏样本上前景学习失败，可在同一固定图像对上测试
+`--num-queries 256 --background-weight 0.1`。这一实验把匹配到填充背景的槽在分类和
+可见性损失中的相对权重降到 0.1，按每组样本的有效权重归一化。真实实例在某视角不可见
+时的负监督保持权重 1。Hungarian 匹配和框损失沿用作者实现。默认权重为 1，
+直接调用原始损失；启用降权的训练应使用新输出目录。续训时读取该次运行保存的配置。
+
 正式训练去掉样本限制，使用新目录。先跑 1～3 轮看完整验证集的 AP50、mAP、MDA 和正确关联数：
 
 ```bash

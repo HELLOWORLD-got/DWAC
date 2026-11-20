@@ -13,6 +13,7 @@ from tqdm import tqdm
 
 from model import ModelConfig, TrainConfig, build_model as build_author_model
 from model import pad_targets
+from .background_loss import BackgroundWeightedLoss
 from .data import MultiViewDataset, collate
 from .metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
@@ -20,7 +21,8 @@ from .metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 def load_config(path):
     data = json.loads(Path(path).read_text())
     data["model"] = asdict(ModelConfig(**data["model"]))
-    defaults = {**asdict(TrainConfig()), "workers": 4, "seed": 42, "freeze_bn_stats": True}
+    defaults = {**asdict(TrainConfig()), "workers": 4, "seed": 42,
+                "freeze_bn_stats": True, "background_weight": 1.0}
     data["training"] = defaults | data.get("training", {})
     return data
 
@@ -28,6 +30,14 @@ def load_config(path):
 def seed_all(seed):
     random.seed(seed)
     torch.manual_seed(seed)
+
+
+def build_criterion(net, config):
+    criterion = net.build_criterion()
+    weight = config["training"].get("background_weight", 1.0)
+    if weight == 1.0:
+        return criterion
+    return BackgroundWeightedLoss(criterion, weight)
 
 
 def build_model(config, initialize_weights=False):

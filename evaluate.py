@@ -6,7 +6,7 @@ from pathlib import Path
 
 import torch
 
-from training.engine import build_model, evaluate, make_loader
+from training.engine import build_criterion, build_model, evaluate, make_loader
 
 
 def main():
@@ -31,7 +31,7 @@ def main():
                          workers=args.workers, limit=args.limit)
     net = build_model(config).to(device)
     net.load_state_dict(checkpoint["model"])
-    result = evaluate(net, net.build_criterion(), loader, config, device,
+    result = evaluate(net, build_criterion(net, config), loader, config, device,
                       progress=True, export=args.export_predictions)
     result.update(epoch=checkpoint["epoch"], split=args.split, limited=args.limit is not None,
                   checkpoint=str(Path(args.checkpoint).resolve()), configuration=config)

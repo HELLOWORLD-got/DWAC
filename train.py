@@ -12,7 +12,7 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
 
 from training import distributed
-from training.engine import build_model, evaluate, forward_loss, load_config, make_loader
+from training.engine import build_criterion, build_model, evaluate, forward_loss, load_config, make_loader
 from training.engine import freeze_training_bn, seed_all
 
 
@@ -48,6 +48,8 @@ def run(args, config, device, rank, world):
                     "clip_grad", "limit_train", "limit_val"):
             if train_settings[key] != saved["training"][key]:
                 raise ValueError(f"Resume changed training setting {key}")
+        if train_settings["background_weight"] != saved["training"].get("background_weight", 1.0):
+            raise ValueError("Resume requires the same background weight")
         start = checkpoint["epoch"]
         best = tuple(checkpoint["best"])
     if start >= train_settings["epochs"]:
@@ -65,7 +67,7 @@ def run(args, config, device, rank, world):
         raw.load_state_dict(checkpoint["model"])
     model = (DistributedDataParallel(raw, device_ids=[device.index] if device.type == "cuda" else None)
              if world > 1 else raw)
-    criterion = raw.build_criterion()
+    criterion = build_criterion(raw, config)
     optimizer = torch.optim.AdamW(
         (p for p in raw.parameters() if p.requires_grad),
         lr=train_settings["lr"], weight_decay=train_settings["weight_decay"],
@@ -161,11 +163,16 @@ def main():
     parser.add_argument("--limit-train", type=int)
     parser.add_argument("--limit-val", type=int)
     parser.add_argument("--clip-grad", type=float, help="Optional gradient clipping norm")
+    parser.add_argument("--background-weight", type=float, help="Loss weight of padded slots, in (0, 1]")
     parser.add_argument("--random-init", action="store_true")
     parser.add_argument("--progress", choices=("auto", "bar", "log"), default="auto")
     args = parser.parse_args()
     config = load_config(args.config)
     training = config["training"]
+    if args.background_weight is not None:
+        training["background_weight"] = args.background_weight
+    if not 0 < training["background_weight"] <= 1:
+        parser.error("--background-weight must be in (0, 1]")
     for key in ("epochs", "batch_size", "workers"):
         if getattr(args, key) is not None:
             training[key] = getattr(args, key)

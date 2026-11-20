@@ -11,7 +11,7 @@ import torch
 from torchvision.ops import box_iou
 
 from training.data import MultiViewDataset
-from training.engine import build_model, forward_loss, freeze_training_bn, load_config
+from training.engine import build_criterion, build_model, forward_loss, freeze_training_bn, load_config
 from training.engine import seed_all
 from training.metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
@@ -64,6 +64,7 @@ def main():
     p.add_argument("--device", default="cpu")
     p.add_argument("--index", type=int, default=334, help="Zero-based training manifest index")
     p.add_argument("--num-queries", type=int, help="Override query count for this one-pair diagnostic")
+    p.add_argument("--background-weight", type=float, help="Loss weight of padded slots, in (0, 1]")
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--report-every", type=int, default=50)
     p.add_argument("--output", default="runs/author_overfit/report.json")
@@ -78,6 +79,10 @@ def main():
         cfg["model"]["num_queries"] = args.num_queries
     device = torch.device(args.device)
     settings = cfg["training"]
+    if args.background_weight is not None:
+        settings["background_weight"] = args.background_weight
+    if not 0 < settings["background_weight"] <= 1:
+        p.error("--background-weight must be in (0, 1]")
     seed_all(settings["seed"])
     data, model = cfg["data"], cfg["model"]
     # Check capacity on the selected pair only. This makes the paper's N=25
@@ -91,7 +96,7 @@ def main():
         p.error(f"Sample has {len(target['labels'])} instances but only {model['num_queries']} queries")
     images = [image.unsqueeze(0).to(device) for image in images]
     net = build_model(cfg, initialize_weights=True).to(device)
-    criterion = net.build_criterion()
+    criterion = build_criterion(net, cfg)
     optimizer = torch.optim.AdamW(
         (p for p in net.parameters() if p.requires_grad),
         lr=settings["lr"], weight_decay=settings["weight_decay"],
