@@ -40,7 +40,17 @@ torchrun --nproc-per-node=2 --rdzv-backend=static \
   --limit-train 16 --limit-val 8 --output runs/author_gpu_check
 ```
 
-正式训练去掉样本限制，使用新目录。建议先跑 3 轮看完整验证集的 AP50、mAP、MDA 和正确关联数：
+长训前可用单张空闲 GPU 检查学习能力。下面固定一对真实训练图像，关闭增强，
+使用当前完整模型和输入尺寸从 ImageNet 权重初始化，逐步报告框覆盖和正确关联：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python tools/overfit.py --device cuda --steps 600
+```
+
+看 `raw_box_hits`（忽略分数的单视角框命中）、`raw_same_query_hits`（忽略分数的双视角同槽命中）、
+`AP50` 和 `true_associations` 能否持续改善。此测试只衡量模型记住训练样本的能力。
+
+正式训练去掉样本限制，使用新目录。先跑 1～3 轮看完整验证集的 AP50、mAP、MDA 和正确关联数：
 
 ```bash
 CUDA_VISIBLE_DEVICES=1,2 NCCL_P2P_DISABLE=1 \

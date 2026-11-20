@@ -101,11 +101,12 @@ def run(args, config, device, rank, world):
                     if not torch.isfinite(loss):
                         raise FloatingPointError("non-finite loss")
                     loss.backward()
-                    if args.clip_grad is not None:
-                        torch.nn.utils.clip_grad_norm_(raw.parameters(), args.clip_grad,
-                                                       error_if_nonfinite=True)
+                    # An infinite cap checks the gradient norm while preserving
+                    # finite gradients when clipping was not requested.
+                    cap = args.clip_grad if args.clip_grad is not None else float("inf")
+                    torch.nn.utils.clip_grad_norm_(raw.parameters(), cap, error_if_nonfinite=True)
                     optimizer.step()
-                except (ValueError, FloatingPointError) as exc:
+                except (ValueError, FloatingPointError, RuntimeError) as exc:
                     raise RuntimeError(f"rank={rank}, epoch={epoch}, batch={index}: {exc}") from exc
                 value = loss.item()
                 total_loss += value * len(targets)
