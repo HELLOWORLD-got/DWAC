@@ -16,6 +16,17 @@ from training.engine import seed_all
 from training.metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
 
+def use_resnet_stride16(backbone):
+    """Mirror TorchVision's stride replacement in layer4 while retaining its weights."""
+    first, *remaining = backbone.stem[-1]
+    first.conv2.stride = (1, 1)
+    first.downsample[0].stride = (1, 1)
+    for block in remaining:
+        block.conv2.dilation = (2, 2)
+        block.conv2.padding = (2, 2)
+    backbone.stride = 16
+
+
 @torch.no_grad()
 def measure(net, criterion, images, target, device, config):
     net.eval()
@@ -65,9 +76,11 @@ def main():
     p.add_argument("--index", type=int, default=334, help="Zero-based training manifest index")
     p.add_argument("--num-queries", type=int, help="Override query count for this one-pair diagnostic")
     p.add_argument("--background-weight", type=float, help="Loss weight of padded slots, in (0, 1]")
+    p.add_argument("--resnet-stride16", action="store_true",
+                   help="Test dilated ResNet-50 layer4 at output stride 16")
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--report-every", type=int, default=50)
-    p.add_argument("--output", default="runs/author_overfit/report.json")
+    p.add_argument("--output")
     args = p.parse_args()
     if args.index < 0 or min(args.steps, args.report_every) < 1:
         p.error("--index must be nonnegative, and reporting interval and steps must be positive")
@@ -85,6 +98,8 @@ def main():
         p.error("--background-weight must be in (0, 1]")
     seed_all(settings["seed"])
     data, model = cfg["data"], cfg["model"]
+    if args.resnet_stride16 and model["backbone"] != "resnet50":
+        p.error("--resnet-stride16 requires the ResNet-50 backbone")
     # Check capacity on the selected pair only. This makes the paper's N=25
     # testable without admitting a 25-query model to the full MDMT loader.
     dataset = MultiViewDataset(data["train"], size=(data["height"], data["width"]),
@@ -95,18 +110,23 @@ def main():
     if len(target["labels"]) > model["num_queries"]:
         p.error(f"Sample has {len(target['labels'])} instances but only {model['num_queries']} queries")
     images = [image.unsqueeze(0).to(device) for image in images]
-    net = build_model(cfg, initialize_weights=True).to(device)
+    net = build_model(cfg, initialize_weights=True)
+    if args.resnet_stride16:
+        use_resnet_stride16(net.backbone)
+    net.to(device)
     criterion = build_criterion(net, cfg)
     optimizer = torch.optim.AdamW(
         (p for p in net.parameters() if p.requires_grad),
         lr=settings["lr"], weight_decay=settings["weight_decay"],
     )
     print(f"One fixed pair, sequence={target['sequence']} frame={target['frame']}, "
-          f"instances={len(target['labels'])}, device={device}", flush=True)
+          f"instances={len(target['labels'])}, stride={net.backbone.stride}, device={device}", flush=True)
+    default_run = "author_overfit_stride16" if args.resnet_stride16 else "author_overfit"
+    args.output = args.output or f"runs/{default_run}/report.json"
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     report = dict(sample=dict(sequence=target["sequence"], frame=target["frame"], index=args.index),
-                  config=cfg, arguments=vars(args), steps=[])
+                  config=cfg, arguments=vars(args), backbone_stride=net.backbone.stride, steps=[])
     for step in range(args.steps + 1):
         if step % args.report_every == 0 or step == args.steps:
             observation = dict(step=step, **measure(net, criterion, images, target, device, cfg))
