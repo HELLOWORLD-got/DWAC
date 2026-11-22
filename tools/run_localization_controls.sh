@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 # Run from the project root. New runs, identical data and seed; no resume.
 set -euo pipefail
+if [[ ! -f data/processed/MDMT/localization_controls/train.jsonl || \
+      ! -f data/processed/MDMT/localization_controls/val.jsonl || \
+      ! -f configs/localization_controls/trainable.json || \
+      ! -f configs/localization_controls/frozen.json ]]; then
+  echo "Preparing temporal holdout manifests from the existing sparse training data ..."
+  python tools/prepare_localization_controls.py \
+    --config "${CONTROL_SOURCE_CONFIG:-runs/mdmt_sparse_q25_no_dropout/config.json}"
+fi
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-1,2}"
 export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 for mode in trainable frozen; do

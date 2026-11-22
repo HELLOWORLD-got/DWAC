@@ -37,9 +37,9 @@
 - train.py
 - training/engine.py
 - tools/run_localization_controls.sh
-- tools/prepare_localization_controls.py（仅需重新生成清单时使用）
+- tools/prepare_localization_controls.py（启动时缺清单会自动调用）
 - configs/localization_controls/（两份已生成配置）
-- data/processed/MDMT/localization_controls/（已生成的两个JSONL和split_report.json）
+- data/processed/MDMT/localization_controls/（可选；缺失时在服务器自动生成）
 
 服务器原有数据、ImageNet权重、tools/diagnose.py、evaluate.py继续使用；无需上传本地审计runs。原实验检查点保留。
 
@@ -48,6 +48,8 @@
 ```bash
 bash tools/run_localization_controls.sh
 ```
+
+脚本缺少清单或配置时，会使用服务器原有的 `runs/mdmt_sparse_q25_no_dropout/config.json` 和它指向的训练清单自动生成划分。`CONTROL_SOURCE_CONFIG` 可指定其他源配置，必须指向原始稀疏训练清单，不能指向本次生成的划分。
 
 脚本默认用卡1、2，沿用已验证通信设置与端口29643，依次运行trainable/frozen各5轮。若改卡：
 
