@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
@@ -12,6 +13,7 @@ from torch.nn.parallel import DistributedDataParallel
 from tqdm import tqdm
 
 from training import distributed
+from model import ModelConfig
 from training.engine import build_criterion, build_model, evaluate, forward_loss, load_config, make_loader
 from training.engine import freeze_training_bn, seed_all
 
@@ -42,7 +44,9 @@ def run(args, config, device, rank, world):
             raise ValueError("Resume from this run's last.pt or choose a new --output")
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=True)
         saved = checkpoint["config"]
-        if any(config[key] != saved[key] for key in ("model", "data", "evaluation")):
+        # Fill added defaults for legacy checkpoints without allowing mode changes.
+        model_changed = asdict(ModelConfig(**config["model"])) != asdict(ModelConfig(**saved["model"]))
+        if model_changed or any(config[key] != saved[key] for key in ("data", "evaluation")):
             raise ValueError("Resume requires the same model, data and evaluation settings")
         for key in ("batch_size", "lr", "weight_decay", "seed", "freeze_bn_stats",
                     "clip_grad", "limit_train", "limit_val"):

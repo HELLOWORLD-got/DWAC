@@ -32,6 +32,8 @@ class ModelConfig:
     giq_layers: int = 3
     # MVOQ
     mvoq_layers: int = 2
+    # Experimental view-space encoding in MVOQ; "none" preserves old behavior.
+    mvoq_position_encoding: str = "none"
     # matching / loss, Eq. (20)-(25)
     cost_class: float = 1.0
     cost_bbox: float = 1.0

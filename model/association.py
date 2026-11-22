@@ -2,12 +2,13 @@
 
     Y_hat = { ( p_hat_i, { (b_hat_1i, s_hat_1i), ..., (b_hat_Ki, s_hat_Ki) } ) }
 
-Why the association cannot conflict: instance query i is a single slot of the
+Instance query i is a single slot of the
 whole scene.  Whatever the K per-view object queries predict, they are reported
 under the same global ID i, and there is exactly one box per (view, ID) pair —
-so one physical object can never receive two IDs, and no ID appears twice in
-one view.  This is the structural answer the paper gives to the conflicting
-association problem; it is not a post-processing step.
+so no ID appears twice in one view. This indexing constraint does not prove
+that two slots cannot detect the same physical object, or that one slot's
+boxes identify the same physical object in all views. Those semantic
+correspondences must be learned.
 """
 
 from __future__ import annotations
@@ -66,6 +67,7 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             num_layers=config.mvoq_layers,
             ffn_ratio=config.ffn_ratio,
             dropout=config.dropout,
+            position_encoding=config.mvoq_position_encoding,
         )
 
     # ------------------------------------------------------------------ #

@@ -110,9 +110,9 @@ class SelfAttentionBlock(nn.Module):
 class DecoderBlock(nn.Module):
     """Global-instance stage: instance queries talk to each other, then to ``F_G``.
 
-    Figure 3 draws the Global Instance Query Module as "SA Blocks" followed by
-    "CA Blocks"; Eq. (9) is the cross-attention half of that stack. Both are
-    kept here so the block matches the figure.
+    Figure 3's GIQ shows CA Blocks and Eq. (9) specifies cross-attention.
+    The additional query self-attention here is a decoder design choice; it
+    is not explicitly specified for GIQ in that figure or equation.
     """
 
     def __init__(

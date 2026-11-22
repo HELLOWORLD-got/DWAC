@@ -1,23 +1,25 @@
 """Multi-View Object Query Module (MVOQ), Sec. IV-D, Eq. (11)-(14).
 
-The i-th instance feature owns K object queries, one per view (Eq. 11).  Those
-queries are learnable and fixed per view, so instance i is bound to view k by
-construction — that binding is what makes the association conflict-free.
+The i-th instance slot owns K learnable object queries, one per view. Sharing
+the slot index gives a common reported ID; whether those boxes represent the
+same physical object must still be learned through joint matching and loss.
 
 Eq. (11) is a three-way attention: the object query is the query, the instance
-feature is the key, the single-view feature is the value.  With a single key
-the softmax over keys is trivially uniform, so the literal reading degenerates
-to a mean over the value tokens.  The instance feature is therefore injected
-into the query instead::
+feature is the key, the single-view feature is the value. Standard attention
+requires equal key/value token counts, whereas one instance vector and a
+spatial feature map do not satisfy that requirement. Repeating that one key
+over spatial positions would produce uniform weights. The paper does not
+specify the extra operation needed to resolve this. This implementation uses::
 
     q = q_obj + W_ins * f_ins
     f_obj = CA(q, F_k, F_k)
 
-which keeps all three roles from the text — the object query supplies the
-view-specific seed, the instance feature carries global identity and drifts the
-attention towards the locations of this object, and the view feature provides
-the local detail used for the box.  This is the only point where the paper's
-formula is under-specified; the deviation is recorded in README.md.
+This is an interpretation, not an algebraically equivalent implementation of
+Eq. (11). Instance information only changes attention weights; the residual
+below retains object_queries, not the instance-conditioned query. By default,
+no spatial position encoding is added. An opt-in keys_values mode adds fixed
+2D sine-cosine coordinates to both keys and values. These properties matter
+when diagnosing weak instance-conditioned localization.
 """
 
 from __future__ import annotations
@@ -27,7 +29,7 @@ from typing import Sequence
 import torch
 import torch.nn as nn
 
-from .blocks import FFN
+from .blocks import FFN, PositionEncoding2D
 
 
 class TripletAttentionBlock(nn.Module):
@@ -54,9 +56,11 @@ class TripletAttentionBlock(nn.Module):
         object_queries: torch.Tensor,
         instance_features: torch.Tensor,
         view_tokens: torch.Tensor,
+        view_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         conditioned = object_queries + self.instance_projection(instance_features)
-        attn, _ = self.attn(conditioned, view_tokens, view_tokens, need_weights=False)
+        memory = view_tokens if view_positions is None else view_tokens + view_positions
+        attn, _ = self.attn(conditioned, memory, memory, need_weights=False)
         x = self.norm1(object_queries + self.drop1(attn))
         x = self.norm2(x + self.drop2(self.ffn(x)))
         return x
@@ -72,8 +76,13 @@ class MultiViewObjectQuery(nn.Module):
         num_layers: int = 2,
         ffn_ratio: int = 4,
         dropout: float = 0.1,
+        position_encoding: str = "none",
     ) -> None:
         super().__init__()
+        if position_encoding not in ("none", "keys_values"):
+            raise ValueError("MVOQ position_encoding must be 'none' or 'keys_values'")
+        self.position_encoding_mode = position_encoding
+        self.position_encoding = PositionEncoding2D(dim)
         self.dim = dim
         self.num_views = num_views
         self.num_queries = num_queries
@@ -137,9 +146,15 @@ class MultiViewObjectQuery(nn.Module):
         per_view = []
         for k in range(self.num_views):
             view_tokens = single_view_features[k].flatten(2).transpose(1, 2)
+            positions = None
+            if self.position_encoding_mode == "keys_values":
+                positions = self.position_encoding(
+                    *single_view_features[k].shape[-2:],
+                    device=view_tokens.device, dtype=view_tokens.dtype,
+                ).unsqueeze(0)
             queries = self.object_queries[k].unsqueeze(0).expand(batch, -1, -1)
             for layer in self.layers:
-                queries = layer(queries, instance_features, view_tokens)
+                queries = layer(queries, instance_features, view_tokens, positions)
             per_view.append(queries)
 
         object_features = torch.stack(per_view, dim=1)  # (B, K, N, dim)
