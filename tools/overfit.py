@@ -27,6 +27,46 @@ def use_resnet_stride16(backbone):
     backbone.stride = 16
 
 
+class MatchingProbe(torch.nn.Module):
+    """Track which query supervises each real instance in a fixed sample."""
+
+    def __init__(self, matcher, *, fixed):
+        super().__init__()
+        self.matcher = matcher
+        self.fixed = fixed
+        self.first_assignment = None
+        self.previous_queries = None
+        self.changed = 0
+        self.compared = 0
+
+    def forward(self, logits, boxes, targets):
+        training_step = torch.is_grad_enabled()
+        if self.fixed and self.first_assignment is not None:
+            return self.first_assignment
+
+        assignment = self.matcher(logits, boxes, targets)
+        if training_step:
+            if self.fixed:
+                self.first_assignment = assignment
+            # The padded slots are interchangeable. Compare real GT only.
+            pairs = assignment[0]
+            count = int(targets["num_instances"][0])
+            rows, columns = pairs.unbind(1)
+            queries = rows[columns.argsort()][:count]
+            if self.previous_queries is not None:
+                self.changed += int((queries != self.previous_queries).sum())
+                self.compared += count
+            self.previous_queries = queries
+        return assignment
+
+    def sample_change_rate(self):
+        if self.fixed:
+            return 0.0 if self.first_assignment is not None else None
+        rate = self.changed / self.compared if self.compared else None
+        self.changed = self.compared = 0
+        return rate
+
+
 @torch.no_grad()
 def measure(net, criterion, images, target, device, config):
     net.eval()
@@ -43,6 +83,7 @@ def measure(net, criterion, images, target, device, config):
     ])
     visible = target["visible"]
     valid = (overlaps >= settings["iou_threshold"]) & visible[:, None, :]
+    best_iou = overlaps.amax(dim=1)[visible].nan_to_num(0.0)
     common = visible.all(dim=0)
     filtered = valid & pred["present"][:, :, None]
     association = assoc.compute()
@@ -53,6 +94,7 @@ def measure(net, criterion, images, target, device, config):
         "loss": {key: value.item() for key, value in loss.items()},
         "visible_gt_boxes": int(visible.sum()),
         "raw_box_hits": int(valid.any(dim=1).sum()),
+        "median_best_raw_iou": best_iou.median().item() if best_iou.numel() else None,
         "kept_box_hits": int(filtered.any(dim=1).sum()),
         "shared_gt": int(common.sum()),
         "raw_same_query_hits": int(valid.all(dim=0).any(dim=0).sum()),
@@ -78,6 +120,8 @@ def main():
     p.add_argument("--background-weight", type=float, help="Loss weight of padded slots, in (0, 1]")
     p.add_argument("--resnet-stride16", action="store_true",
                    help="Test dilated ResNet-50 layer4 at output stride 16")
+    p.add_argument("--fixed-assignment", action="store_true",
+                   help="Reuse the first training-step Hungarian assignment on this pair")
     p.add_argument("--steps", type=int, default=600)
     p.add_argument("--report-every", type=int, default=50)
     p.add_argument("--output")
@@ -115,6 +159,9 @@ def main():
         use_resnet_stride16(net.backbone)
     net.to(device)
     criterion = build_criterion(net, cfg)
+    author_criterion = getattr(criterion, "author", criterion)
+    probe = MatchingProbe(author_criterion.matcher, fixed=args.fixed_assignment)
+    author_criterion.matcher = probe
     optimizer = torch.optim.AdamW(
         (p for p in net.parameters() if p.requires_grad),
         lr=settings["lr"], weight_decay=settings["weight_decay"],
@@ -122,6 +169,8 @@ def main():
     print(f"One fixed pair, sequence={target['sequence']} frame={target['frame']}, "
           f"instances={len(target['labels'])}, stride={net.backbone.stride}, device={device}", flush=True)
     default_run = "author_overfit_stride16" if args.resnet_stride16 else "author_overfit"
+    if args.fixed_assignment:
+        default_run += "_fixed"
     args.output = args.output or f"runs/{default_run}/report.json"
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -130,6 +179,7 @@ def main():
     for step in range(args.steps + 1):
         if step % args.report_every == 0 or step == args.steps:
             observation = dict(step=step, **measure(net, criterion, images, target, device, cfg))
+            observation["match_change_rate"] = probe.sample_change_rate()
             report["steps"].append(observation)
             output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n")
             print(json.dumps(observation, allow_nan=False), flush=True)
