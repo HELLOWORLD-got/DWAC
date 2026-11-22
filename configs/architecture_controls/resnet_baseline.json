@@ -20,7 +20,8 @@
     "weight_cls": 1.0,
     "weight_reg": 1.0,
     "weight_conf": 1.0,
-    "mvoq_position_encoding": "none"
+    "mvoq_position_encoding": "none",
+    "mvoq_instance_residual": false
   },
   "data": {
     "train": "data/processed/MDMT/localization_controls/train.jsonl",

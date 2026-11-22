@@ -68,6 +68,7 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             ffn_ratio=config.ffn_ratio,
             dropout=config.dropout,
             position_encoding=config.mvoq_position_encoding,
+            instance_residual=config.mvoq_instance_residual,
         )
 
     # ------------------------------------------------------------------ #

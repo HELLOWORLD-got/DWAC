@@ -16,7 +16,9 @@ specify the extra operation needed to resolve this. This implementation uses::
 
 This is an interpretation, not an algebraically equivalent implementation of
 Eq. (11). Instance information only changes attention weights; the residual
-below retains object_queries, not the instance-conditioned query. By default,
+below by default retains object_queries, not the instance-conditioned query.
+The opt-in instance_residual flag instead retains the conditioned query.
+By default,
 no spatial position encoding is added. An opt-in keys_values mode adds fixed
 2D sine-cosine coordinates to both keys and values. These properties matter
 when diagnosing weak instance-conditioned localization.
@@ -41,8 +43,10 @@ class TripletAttentionBlock(nn.Module):
         num_heads: int = 8,
         ffn_ratio: int = 4,
         dropout: float = 0.1,
+        instance_residual: bool = False,
     ) -> None:
         super().__init__()
+        self.instance_residual = instance_residual
         self.instance_projection = nn.Linear(dim, dim)
         self.attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
         self.norm1 = nn.LayerNorm(dim)
@@ -61,7 +65,8 @@ class TripletAttentionBlock(nn.Module):
         conditioned = object_queries + self.instance_projection(instance_features)
         memory = view_tokens if view_positions is None else view_tokens + view_positions
         attn, _ = self.attn(conditioned, memory, memory, need_weights=False)
-        x = self.norm1(object_queries + self.drop1(attn))
+        residual = conditioned if self.instance_residual else object_queries
+        x = self.norm1(residual + self.drop1(attn))
         x = self.norm2(x + self.drop2(self.ffn(x)))
         return x
 
@@ -77,6 +82,7 @@ class MultiViewObjectQuery(nn.Module):
         ffn_ratio: int = 4,
         dropout: float = 0.1,
         position_encoding: str = "none",
+        instance_residual: bool = False,
     ) -> None:
         super().__init__()
         if position_encoding not in ("none", "keys_values"):
@@ -93,7 +99,9 @@ class MultiViewObjectQuery(nn.Module):
         )
         # Layer weights are shared across views ("CA Blocks" repeated in Fig. 3).
         self.layers = nn.ModuleList(
-            [TripletAttentionBlock(dim, num_heads, ffn_ratio, dropout) for _ in range(num_layers)]
+            [TripletAttentionBlock(dim, num_heads, ffn_ratio, dropout,
+                                   instance_residual=instance_residual)
+             for _ in range(num_layers)]
         )
 
         # Eq. (12): box head per view, Sigmoid to keep the box in [0, 1]^4.

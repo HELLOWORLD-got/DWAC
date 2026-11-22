@@ -13,7 +13,7 @@ export NCCL_P2P_DISABLE="${NCCL_P2P_DISABLE:-1}"
 variants=(resnet_baseline resnet_pe vit_baseline)
 if (( $# )); then variants=("$@"); fi
 for mode in "${variants[@]}"; do
-  case "$mode" in resnet_baseline|resnet_pe|vit_baseline) ;; *) echo "Unknown variant: $mode" >&2; exit 2;; esac
+  case "$mode" in resnet_baseline|resnet_pe|vit_baseline|resnet_residual|resnet_pe_residual) ;; *) echo "Unknown variant: $mode" >&2; exit 2;; esac
   extra=(); eval_extra=(); diagnose_limit=64; epochs=5; output="runs/architecture_${mode}"
   if [[ "${SMOKE:-0}" == 1 ]]; then
     extra=(--limit-train 16 --limit-val 8); eval_extra=(--limit 8)

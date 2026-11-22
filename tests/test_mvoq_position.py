@@ -5,6 +5,22 @@ from model.mvoq import MultiViewObjectQuery
 
 
 class MVOQPositionTests(unittest.TestCase):
+    def test_instance_residual_survives_constant_view_tokens(self):
+        torch.manual_seed(42)
+        for pe in ("none", "keys_values"):
+            model = MultiViewObjectQuery(dim=32, num_heads=4, num_views=2,
+                                        num_queries=3, num_layers=2, dropout=0.,
+                                        position_encoding=pe, instance_residual=True).eval()
+            instance = torch.randn(2, 3, 32, requires_grad=True)
+            views = [torch.randn(2, 32, 1, 1).expand(-1, -1, 3, 5) for _ in range(2)]
+            boxes = model(instance, views)["boxes"]
+            shuffled = model(instance.flip(1), views)["boxes"]
+            self.assertGreater(float((boxes-shuffled).detach().abs().max()), 1e-4)
+            weights = torch.linspace(.1, 1., boxes.numel()).reshape_as(boxes)
+            gradient, = torch.autograd.grad((boxes*weights).sum(), instance)
+            self.assertTrue(bool(torch.isfinite(gradient).all()))
+            self.assertGreater(float(gradient.abs().max()), 1e-5)
+
     def test_coordinates_break_spatial_permutation_invariance(self):
         torch.manual_seed(42)
         old = MultiViewObjectQuery(dim=32, num_heads=4, num_views=2,

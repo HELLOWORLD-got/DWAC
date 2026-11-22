@@ -1,5 +1,36 @@
 # MVOQ位置编码与ViT短对照
 
+## 当前下一步：补齐实例残差两组
+
+已完成的ResNet原版和ResNet+PE无需重跑。新选项 `model.mvoq_instance_residual`
+默认false，开启后每层第一条残差从 `LN(q_obj + attn)` 改为
+`LN(q_obj + W_ins*f_ins + attn)`，其余运算不变、不新增权重。
+这是候选架构改动，并非已证明有效的修复。
+
+从同样的ImageNet初始化，保持931/253划分、416×720、25query、无dropout、
+背景权重0.1、global batch4、同学习率和seed，各训练5轮：
+
+```bash
+bash tools/run_architecture_controls.sh resnet_residual resnet_pe_residual
+```
+
+前者只开实例残差，后者同时开K/V位置编码与实例残差。服务器执行前，通过Git
+同步model/config.py、model/mvoq.py、model/association.py、
+tools/prepare_architecture_controls.py、tools/run_architecture_controls.sh。
+若希望有新增中心/宽高诊断，一并同步tools/diagnose.py。配置由脚本自动生成，
+不需要ZIP或重新上传数据。旧的train.py已兼容新增默认配置字段。
+
+输出为runs/architecture_resnet_residual与runs/architecture_resnet_pe_residual，
+脚本结束会自动生成history.jsonl、diagnosis.json、unseen_sequence64.json。
+不从旧checkpoint续训，不更改stride、NMS、阈值或query数。
+
+最终比较四组：原版、仅PE、仅残差、PE+残差。如果只有联合组在训练定位和验证
+定位上都改善，才支持两者互补；若仅残差已足够，则不能把收益归给PE；若两组仍差，
+不继续100轮或叠加其它模块。单seed、5轮仍只用于筛选。
+
+本地16项测试通过，两组64×96真实4样本训练/4样本验证/保存通过；默认关闭残差时，
+原版和PE输出均与修改前逐位一致。这些是运行与机制验证，不是性能结论。
+
 ## 实现与实验目的
 
 新增 `model.mvoq_position_encoding` 配置：
