@@ -5,6 +5,38 @@ from model.mvoq import MultiViewObjectQuery
 
 
 class MVOQPositionTests(unittest.TestCase):
+    def test_normalized_position_scale_and_learning_paths(self):
+        torch.manual_seed(42)
+        model = MultiViewObjectQuery(dim=32, num_heads=4, num_views=2,
+                                    num_queries=3, num_layers=2, dropout=0.,
+                                    position_encoding="normalized_keys_values",
+                                    instance_residual=True).eval()
+        instance = torch.randn(2, 3, 32, requires_grad=True)
+        views = [torch.randn(2, 32, 3, 5, requires_grad=True)*.1 for _ in range(2)]
+        tokens, position = model.prepare_view_tokens(views[0])
+        self.assertAlmostEqual(float(tokens.detach().square().mean().sqrt()), 1., places=2)
+        self.assertAlmostEqual(float(position.detach().square().mean().sqrt()), .1, places=5)
+        torch.testing.assert_close(position.mean(1), torch.zeros(1, 32), atol=1e-6, rtol=0.)
+        boxes = model(instance, views)["boxes"]
+        shuffled = [v.flatten(2).flip(-1).reshape_as(v) for v in views]
+        self.assertGreater(float((boxes-model(instance, shuffled)["boxes"]).detach().abs().max()), 1e-5)
+        self.assertGreater(float((boxes-model(instance.flip(1), views)["boxes"]).detach().abs().max()), 1e-4)
+        weights = torch.linspace(.1, 1., boxes.numel()).reshape_as(boxes)
+        (boxes*weights).sum().backward()
+        for param in [model.position_logit, model.view_norm.weight, instance]:
+            self.assertIsNotNone(param.grad)
+            self.assertTrue(bool(torch.isfinite(param.grad).all()))
+            self.assertGreater(float(param.grad.abs().max()), 1e-8)
+
+    def test_one_cell_grid_has_finite_zero_position(self):
+        model = MultiViewObjectQuery(dim=32, num_heads=4, num_views=2,
+                                    num_queries=3, dropout=0.,
+                                    position_encoding="normalized_keys_values",
+                                    instance_residual=True).eval()
+        _, pe = model.prepare_view_tokens(torch.randn(1, 32, 1, 1))
+        self.assertTrue(bool(torch.isfinite(pe).all()))
+        self.assertEqual(float(pe.detach().abs().max()), 0.)
+
     def test_instance_residual_survives_constant_view_tokens(self):
         torch.manual_seed(42)
         for pe in ("none", "keys_values"):

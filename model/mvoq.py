@@ -20,13 +20,16 @@ below by default retains object_queries, not the instance-conditioned query.
 The opt-in instance_residual flag instead retains the conditioned query.
 By default,
 no spatial position encoding is added. An opt-in keys_values mode adds fixed
-2D sine-cosine coordinates to both keys and values. These properties matter
+2D sine-cosine coordinates to both keys and values. The normalized_keys_values
+mode additionally normalizes visual tokens, centers and normalizes the spatial
+encoding, and learns its bounded scale. These properties matter
 when diagnosing weak instance-conditioned localization.
 """
 
 from __future__ import annotations
 
 from typing import Sequence
+import math
 
 import torch
 import torch.nn as nn
@@ -85,10 +88,17 @@ class MultiViewObjectQuery(nn.Module):
         instance_residual: bool = False,
     ) -> None:
         super().__init__()
-        if position_encoding not in ("none", "keys_values"):
-            raise ValueError("MVOQ position_encoding must be 'none' or 'keys_values'")
+        if position_encoding not in ("none", "keys_values", "normalized_keys_values"):
+            raise ValueError("Unknown MVOQ position encoding mode")
         self.position_encoding_mode = position_encoding
         self.position_encoding = PositionEncoding2D(dim)
+        if position_encoding == "normalized_keys_values":
+            self.view_norm = nn.LayerNorm(dim)
+            # sigmoid(logit) starts at 0.1 and stays in (0, 1).
+            self.position_logit = nn.Parameter(torch.tensor(math.log(.1 / .9)))
+        else:
+            self.view_norm = nn.Identity()
+            self.register_parameter("position_logit", None)
         self.dim = dim
         self.num_views = num_views
         self.num_queries = num_queries
@@ -131,6 +141,26 @@ class MultiViewObjectQuery(nn.Module):
             ]
         )
 
+    def prepare_view_tokens(self, feature: torch.Tensor):
+        """Return the actual visual tokens and positional term used by K/V.
+
+        Normalized mode puts both terms on a defined RMS scale, removes the
+        position-constant component, and learns a bounded positional weight.
+        No position is inferred from a batch index or an instance slot.
+        """
+        tokens = self.view_norm(feature.flatten(2).transpose(1, 2))
+        positions = None
+        if self.position_encoding_mode != "none":
+            positions = self.position_encoding(
+                *feature.shape[-2:], device=tokens.device, dtype=tokens.dtype,
+            ).unsqueeze(0)
+            if self.position_encoding_mode == "normalized_keys_values":
+                positions = positions - positions.mean(dim=1, keepdim=True)
+                rms = positions.float().square().mean().sqrt().clamp_min(1e-6)
+                positions = positions / rms.to(positions.dtype)
+                positions = positions * self.position_logit.sigmoid().to(positions.dtype)
+        return tokens, positions
+
     def forward(
         self,
         instance_features: torch.Tensor,
@@ -153,13 +183,7 @@ class MultiViewObjectQuery(nn.Module):
 
         per_view = []
         for k in range(self.num_views):
-            view_tokens = single_view_features[k].flatten(2).transpose(1, 2)
-            positions = None
-            if self.position_encoding_mode == "keys_values":
-                positions = self.position_encoding(
-                    *single_view_features[k].shape[-2:],
-                    device=view_tokens.device, dtype=view_tokens.dtype,
-                ).unsqueeze(0)
+            view_tokens, positions = self.prepare_view_tokens(single_view_features[k])
             queries = self.object_queries[k].unsqueeze(0).expand(batch, -1, -1)
             for layer in self.layers:
                 queries = layer(queries, instance_features, view_tokens, positions)

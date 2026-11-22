@@ -93,19 +93,19 @@ def scan(net, config, split, limit, batch_size, device):
     loader = DataLoader(Subset(dataset, indices), batch_size=batch_size, collate_fn=collate)
     counts = Counter()
     per_sequence, per_view = {}, {}
-    amplitude = [dict(samples=0, feature_rms_sum=0., position_rms_sum=0.)
+    amplitude = [dict(samples=0, raw_feature_rms_sum=0., feature_rms_sum=0., position_rms_sum=0.)
                  for _ in range(model["num_views"])]
     best_ious = []
     association = AssociationMetrics(settings["iou_threshold"], settings["ucr_threshold"])
     for images, targets in loader:
         outputs = net([image.to(device) for image in images])
-        if model.get("mvoq_position_encoding", "none") == "keys_values":
+        if model.get("mvoq_position_encoding", "none") != "none":
             for view, feature in enumerate(outputs["view_features"]):
-                pe = net.mvoq.position_encoding(*feature.shape[-2:], device=feature.device,
-                                                 dtype=feature.dtype)
+                tokens, pe = net.mvoq.prepare_view_tokens(feature)
                 row = amplitude[view]
                 row["samples"] += len(feature)
-                row["feature_rms_sum"] += float(feature.float().square().mean((1, 2, 3)).sqrt().sum())
+                row["raw_feature_rms_sum"] += float(feature.float().square().mean((1, 2, 3)).sqrt().sum())
+                row["feature_rms_sum"] += float(tokens.float().square().mean((1, 2)).sqrt().sum())
                 row["position_rms_sum"] += float(pe.float().square().mean().sqrt()) * len(feature)
         predictions = decode(outputs, settings["confidence_threshold"])
         classes = outputs["class_logits"].float().argmax(dim=-1).cpu()
@@ -127,6 +127,7 @@ def scan(net, config, split, limit, batch_size, device):
     metrics = association.compute()
     position_amplitude = [dict(
         view=view+1, feature_rms=row["feature_rms_sum"] / row["samples"],
+        raw_feature_rms=row["raw_feature_rms_sum"] / row["samples"],
         position_rms=row["position_rms_sum"] / row["samples"],
         position_to_feature_rms=row["position_rms_sum"] / max(row["feature_rms_sum"], 1e-12),
     ) for view, row in enumerate(amplitude) if row["samples"]]

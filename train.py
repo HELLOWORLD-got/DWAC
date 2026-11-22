@@ -141,6 +141,9 @@ def run(args, config, device, rank, world):
                           train_samples_per_second=float(totals[1]) / train_seconds,
                           rank0_train_peak_allocated_gib=train_peak,
                           elapsed_seconds=time.monotonic() - began, validation=result)
+            position_logit = getattr(raw.mvoq, "position_logit", None)
+            if position_logit is not None:
+                record["mvoq_position_scale"] = float(position_logit.detach().sigmoid())
             state = dict(model=raw.state_dict(), optimizer=optimizer.state_dict(),
                          config=config, epoch=epoch, best=best,
                          rank_rng_states=states, world_size=world, validation=result)
