@@ -2,7 +2,8 @@
 
 `model/` 是作者更新提交
 [`e2076af`](https://github.com/yyyyyxq/Instance-based-Association/tree/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model)
-中的源码。训练直接调用作者的模型、`pad_targets`、Hungarian matcher 和 SetCriterion。
+中的源码为基础。当前仅修正了 `predict(class_threshold=...)` 放行背景类别的问题；
+该接口修正不改变训练前向、损失或现有验证解码。训练直接调用作者的模型、`pad_targets`、Hungarian matcher 和 SetCriterion。
 `training/` 负责 MDMT 数据加载、增强、训练接口和评估。旧版本的权重与新版架构不兼容。
 
 ## 数据与参数
@@ -49,6 +50,19 @@ CUDA_VISIBLE_DEVICES=1 python tools/overfit.py --device cuda --steps 600
 
 看 `raw_box_hits`（忽略分数的单视角框命中）、`raw_same_query_hits`（忽略分数的双视角同槽命中）、
 `AP50` 和 `true_associations` 能否持续改善。此测试只衡量模型记住训练样本的能力。
+
+固定多个场景可用 `--indices`，下面四组均不超过 25 个真实实例，索引对应完整训练清单。
+它们仍是训练样本，测试结果不能作为验证集成绩或论文复现成绩：
+
+```bash
+CUDA_VISIBLE_DEVICES=1 python tools/overfit.py \
+  --config configs/mdmt_resnet50_no_dropout.json --device cuda \
+  --indices 249 4140 7209 7955 --num-queries 25 --background-weight 0.1 \
+  --steps 400 --report-every 100 --output runs/four_scene_check/report.json
+```
+
+监督、数据几何、解码和梯度的回归检查：`python -m unittest discover -s tests -v`。
+检查通过只说明这些具体行为满足断言，不证明模型收敛或能复现论文成绩。
 
 完整 MDMT 需要保留足够的查询。若稀疏样本上前景学习失败，可在同一固定图像对上测试
 `--num-queries 256 --background-weight 0.1`。这一实验把匹配到填充背景的槽在分类和

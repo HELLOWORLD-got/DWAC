@@ -50,6 +50,8 @@ def run(args, config, device, rank, world):
                 raise ValueError(f"Resume changed training setting {key}")
         if train_settings["background_weight"] != saved["training"].get("background_weight", 1.0):
             raise ValueError("Resume requires the same background weight")
+        if train_settings.get("freeze_backbone_stem", False) != saved["training"].get("freeze_backbone_stem", False):
+            raise ValueError("Resume requires the same backbone freezing setting")
         start = checkpoint["epoch"]
         best = tuple(checkpoint["best"])
     if start >= train_settings["epochs"]:

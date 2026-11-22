@@ -140,10 +140,9 @@ class ConflictFreeMultiViewAssociation(nn.Module):
 
         labels = class_probs.argmax(dim=-1)  # (B, N)
         class_scores = class_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
+        keep = (labels != num_classes).unsqueeze(1)  # (B, 1, N)
         if class_threshold is not None:
-            keep = (class_scores >= class_threshold).unsqueeze(1)
-        else:
-            keep = (labels != num_classes).unsqueeze(1)  # (B, 1, N)
+            keep = keep & (class_scores >= class_threshold).unsqueeze(1)
         valid = keep & (confidences >= score_threshold)
 
         results = []

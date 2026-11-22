@@ -66,6 +66,11 @@ def build_model(config, initialize_weights=False):
     if is_vit:
         # The author's forward uses patch features and never calls the classifier.
         backbone.vit.heads.requires_grad_(False)
+    if config["training"].get("freeze_backbone_stem", False):
+        if is_vit or model_config.freeze_backbone:
+            raise ValueError("freeze_backbone_stem requires ResNet and freeze_backbone=false")
+        # Keep the randomly initialized 2048->256 projection trainable.
+        backbone.stem.requires_grad_(False)
     return net
 
 
@@ -76,6 +81,8 @@ def freeze_training_bn(net, config):
         for layer in net.backbone.modules():
             if isinstance(layer, torch.nn.modules.batchnorm._BatchNorm):
                 layer.eval()
+    if config["training"].get("freeze_backbone_stem", False):
+        net.backbone.stem.eval()
 
 
 def make_loader(config, split, device, *, batch_size, workers, limit=None, rank=0, world=1):
