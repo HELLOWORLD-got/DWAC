@@ -22,6 +22,8 @@ def main():
     args = parser.parse_args()
     if args.batch_size < 1 or args.workers < 0 or (args.limit is not None and args.limit < 1):
         parser.error("batch size and limit must be positive; workers must be nonnegative")
+    if Path(args.output).resolve() == Path(args.checkpoint).resolve():
+        parser.error("--output must not overwrite the checkpoint")
     if args.export_predictions and any(Path(args.export_predictions).glob("*.json")):
         parser.error("Choose an empty prediction directory to avoid mixing exports")
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=True)

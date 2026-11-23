@@ -20,6 +20,10 @@ def main():
     p.add_argument("--output", default="runs/inference")
     p.add_argument("--confidence", type=float)
     args = p.parse_args()
+    sources = {Path(path).resolve() for path in args.images}
+    if any((Path(args.output) / f"view_{v+1}.jpg").resolve() in sources
+           for v in range(len(args.images))):
+        p.error("Output images must not overwrite input images")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=True)
     cfg = state["config"]
     if len(args.images) != cfg["model"]["num_views"]:

@@ -1,7 +1,6 @@
 """Conflict-free multi-view object association — model reproduction of the TGRS paper.
 
 Modules follow the paper section by section:
-
     model.backbone   Eq. (5)        F_k = Backbone(I_k)
     model.mvff       Eq. (6)-(8)    MVFF, cross-view attention + global self-attention
     model.giq        Eq. (9)-(10)   GIQ, instance queries + class head
@@ -10,13 +9,11 @@ Modules follow the paper section by section:
     model.matcher    Eq. (20)       Hungarian matching
     model.loss       Eq. (21)-(25)  global joint loss
     model.association Eq. (1)-(4)   the assembled model
-
 Nothing about datasets, dataloaders or the training loop is implemented: the
 request was the model only.
 """
 
 from __future__ import annotations
-
 from .association import ConflictFreeMultiViewAssociation, build_model
 from .backbone import ResNetBackbone, ViTBackbone, build_backbone
 from .blocks import (
@@ -40,7 +37,6 @@ from .matcher import HungarianMatcher, linear_sum_assignment
 from .mvoq import MultiViewObjectQuery, TripletAttentionBlock
 from .mvff import MultiViewFeatureFusion
 from .targets import pad_targets
-
 __all__ = [
     "ConflictFreeMultiViewAssociation",
     "build_model",

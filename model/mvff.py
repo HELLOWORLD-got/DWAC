@@ -8,7 +8,6 @@ Two stages:
 2. Global self-attention (Eq. 7-8).  The K cross-view feature maps are
    concatenated along the channel axis into a ``256*K x H' x W'`` map, then
    three layers of self-attention produce ``F_G`` with 256 channels.
-
 The paper does not mention the channel reduction that stage 2 needs: attention
 with 8 heads cannot consume 256*K channels and still output 256.  A 1x1
 convolution is therefore applied to the concatenated map before the SA layers
@@ -25,7 +24,6 @@ import torch.nn as nn
 
 from .blocks import CrossAttentionBlock, SelfAttentionBlock
 
-
 class MultiViewFeatureFusion(nn.Module):
     def __init__(
         self,
@@ -40,7 +38,6 @@ class MultiViewFeatureFusion(nn.Module):
         self.dim = dim
         self.num_views = num_views
         self.num_layers = num_layers
-
         self.ca_layers = nn.ModuleList(
             [
                 CrossAttentionBlock(dim, num_heads, ffn_ratio, dropout)
@@ -55,10 +52,8 @@ class MultiViewFeatureFusion(nn.Module):
                 for _ in range(num_layers)
             ]
         )
-
     def forward(self, features: Sequence[torch.Tensor]) -> torch.Tensor:
         """``features``: K tensors of shape ``(B, dim, H', W')``.
-
         Returns ``F_G`` of shape ``(B, dim, H', W')`` (Eq. 2).
         """
         if len(features) != self.num_views:
@@ -67,7 +62,6 @@ class MultiViewFeatureFusion(nn.Module):
             )
         batch, dim, height, width = features[0].shape
         tokens = [f.flatten(2).transpose(1, 2) for f in features]  # (B, H'W', dim)
-
         # --- stage 1: cross-view attention, Eq. (6) -------------------------
         cross_view = []
         for k in range(self.num_views):
@@ -78,7 +72,6 @@ class MultiViewFeatureFusion(nn.Module):
             for layer in self.ca_layers:
                 x = layer(x, keys)
             cross_view.append(x)
-
         # --- stage 2: global self-attention, Eq. (7)-(8) --------------------
         concatenated = torch.cat(
             [x.transpose(1, 2).reshape(batch, dim, height * width) for x in cross_view],
@@ -88,5 +81,4 @@ class MultiViewFeatureFusion(nn.Module):
         tokens_out = fused.flatten(2).transpose(1, 2)  # (B, H'W', dim)
         for layer in self.sa_layers:
             tokens_out = layer(tokens_out)
-
         return tokens_out.transpose(1, 2).reshape(batch, dim, height, width)

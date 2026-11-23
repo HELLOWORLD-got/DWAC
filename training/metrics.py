@@ -55,6 +55,7 @@ class AssociationMetrics:
         self.sequence_mda = defaultdict(list)
         self.true = self.predicted = self.ground_truth = 0
         self.correct = self.instances = self.frames = 0
+        self.empty_association_frames = 0
 
     def update(self, pred, target):
         boxes = target["boxes"].cpu()
@@ -82,9 +83,12 @@ class AssociationMetrics:
             fa = ra - ta
             ma = ga - ta
             denominator = ga + fa + ma
-            # Empty GT & empty output is correct. Report this explicit convention.
-            value = ta / denominator if denominator else 1.0
-            self.sequence_mda[str(target["sequence"])].append(value)
+            # No GT associations and no predictions gives 0/0, not evidence
+            # of successful association. Exclude it from the MDA mean.
+            if denominator:
+                self.sequence_mda[str(target["sequence"])].append(ta / denominator)
+            else:
+                self.empty_association_frames += 1
             self.true += ta
             self.predicted += ra
             self.ground_truth += ga
@@ -119,6 +123,8 @@ class AssociationMetrics:
             correct_instances=self.correct,
             total_instances=self.instances,
             frames=self.frames,
+            empty_association_frames=self.empty_association_frames,
+            empty_association_policy="exclude_when_gt_and_prediction_associations_are_empty",
             MDA_per_sequence=per_sequence,
         )
 

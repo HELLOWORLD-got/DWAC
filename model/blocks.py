@@ -9,7 +9,6 @@ The paper fixes one configuration everywhere (Sec. IV-B2):
 All blocks below therefore use post-normalization, i.e. ``LN(x + f(x))``,
 which is what that sentence describes.
 """
-
 from __future__ import annotations
 
 import math
@@ -25,7 +24,6 @@ class FFN(nn.Module):
     heads are described only as "FFN" (Eq. 10, 12, 13); the internal ratio of
     four is the standard DETR/ViT choice and is exposed as ``ratio``.
     """
-
     def __init__(self, dim: int, ratio: int = 4, dropout: float = 0.1) -> None:
         super().__init__()
         hidden = int(dim * ratio)
@@ -42,11 +40,9 @@ class FFN(nn.Module):
 
 class CrossAttentionBlock(nn.Module):
     """Eq. (6): ``F_k,cross = CA(F_k, F_{-k})``.
-
     ``queries`` come from one view, ``keys``/``values`` from the other views.
     Post-norm residual, then the position-wise FFN (again post-norm).
     """
-
     def __init__(
         self,
         dim: int = 256,
@@ -61,7 +57,6 @@ class CrossAttentionBlock(nn.Module):
         self.ffn = FFN(dim, ffn_ratio, dropout)
         self.norm2 = nn.LayerNorm(dim)
         self.drop2 = nn.Dropout(dropout)
-
     def forward(
         self,
         queries: torch.Tensor,
@@ -81,10 +76,8 @@ class CrossAttentionBlock(nn.Module):
         x = self.norm2(x + self.drop2(self.ffn(x)))
         return x
 
-
 class SelfAttentionBlock(nn.Module):
     """Eq. (8): ``F_G = SA(F_concat)`` — self-attention over a token set."""
-
     def __init__(
         self,
         dim: int = 256,
@@ -99,7 +92,6 @@ class SelfAttentionBlock(nn.Module):
         self.ffn = FFN(dim, ffn_ratio, dropout)
         self.norm2 = nn.LayerNorm(dim)
         self.drop2 = nn.Dropout(dropout)
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         attn, _ = self.attn(x, x, x, need_weights=False)
         x = self.norm1(x + self.drop1(attn))
@@ -109,12 +101,10 @@ class SelfAttentionBlock(nn.Module):
 
 class DecoderBlock(nn.Module):
     """Global-instance stage: instance queries talk to each other, then to ``F_G``.
-
-    Figure 3's GIQ shows CA Blocks and Eq. (9) specifies cross-attention.
-    The additional query self-attention here is a decoder design choice; it
-    is not explicitly specified for GIQ in that figure or equation.
+    Figure 3 draws the Global Instance Query Module as "SA Blocks" followed by
+    "CA Blocks"; Eq. (9) is the cross-attention half of that stack. Both are
+    kept here so the block matches the figure.
     """
-
     def __init__(
         self,
         dim: int = 256,
@@ -126,7 +116,6 @@ class DecoderBlock(nn.Module):
         self.self_attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
         self.norm_sa = nn.LayerNorm(dim)
         self.drop_sa = nn.Dropout(dropout)
-
         self.cross_attn = nn.MultiheadAttention(dim, num_heads, dropout=dropout, batch_first=True)
         self.norm_ca = nn.LayerNorm(dim)
         self.drop_ca = nn.Dropout(dropout)
@@ -134,7 +123,6 @@ class DecoderBlock(nn.Module):
         self.ffn = FFN(dim, ffn_ratio, dropout)
         self.norm_ffn = nn.LayerNorm(dim)
         self.drop_ffn = nn.Dropout(dropout)
-
     def forward(self, queries: torch.Tensor, memory: torch.Tensor) -> torch.Tensor:
         sa, _ = self.self_attn(queries, queries, queries, need_weights=False)
         x = self.norm_sa(queries + self.drop_sa(sa))
@@ -142,7 +130,6 @@ class DecoderBlock(nn.Module):
         x = self.norm_ca(x + self.drop_ca(ca))
         x = self.norm_ffn(x + self.drop_ffn(self.ffn(x)))
         return x
-
 
 class PositionEncoding2D(nn.Module):
     """Fixed 2D sine-cosine position encoding added to ``F_G`` (Sec. IV-C1).
@@ -152,7 +139,6 @@ class PositionEncoding2D(nn.Module):
     frequency. Coordinates are normalized to ``[0, 1]`` so the encoding does
     not depend on the feature-map size.
     """
-
     def __init__(
         self,
         dim: int = 256,
@@ -165,7 +151,6 @@ class PositionEncoding2D(nn.Module):
         self.dim = dim
         self.temperature = temperature
         self.scale = scale
-
     def _axis_encoding(self, coords: torch.Tensor) -> torch.Tensor:
         """coords: (H, W) in [0, 1] -> (H, W, dim/2)."""
         half = self.dim // 2
@@ -179,7 +164,6 @@ class PositionEncoding2D(nn.Module):
         enc[..., 0::2] = torch.sin(angles)
         enc[..., 1::2] = torch.cos(angles)
         return enc
-
     def forward(
         self,
         height: int,

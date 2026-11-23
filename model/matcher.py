@@ -4,7 +4,6 @@ Every scene has exactly N padded ground-truth slots and N predictions, so the
 assignment is a permutation over N slots.  Real slots (m <= M) cost the
 classification term plus the visibility-masked box term; padded slots
 (m > M) cost only ``-log p_hat_i(c_empty)``.
-
 `scipy.optimize.linear_sum_assignment` is used when available.  scipy is not on
 every deployment box, so an O(n^3) Hungarian implementation in numpy is
 included as a fallback and checked against the optimum in the tests.
@@ -18,10 +17,8 @@ import torch.nn.functional as F
 
 from .box_ops import box_loss_pairwise
 
-
 def _hungarian_numpy(cost_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Minimum-cost full assignment for a square/rectangular cost matrix.
-
     Shortest augmenting path form of the Kuhn-Munkres algorithm with
     potentials (e-maxx formulation); n <= m required internally, the
     transposed case is handled by solving on the transpose.
@@ -34,12 +31,10 @@ def _hungarian_numpy(cost_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         cost = cost.T
         transposed = True
     n, m = cost.shape
-
     u = np.zeros(n + 1)
     v = np.zeros(m + 1)
     match = np.zeros(m + 1, dtype=np.int64)  # match[j] = row index (1-based)
     way = np.zeros(m + 1, dtype=np.int64)
-
     for i in range(1, n + 1):
         match[0] = i
         j0 = 0
@@ -73,7 +68,6 @@ def _hungarian_numpy(cost_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
             j1 = way[j0]
             match[j0] = match[j1]
             j0 = j1
-
     cols = np.full(n, -1, dtype=np.int64)
     for j in range(1, m + 1):
         if match[j] > 0:
@@ -84,7 +78,6 @@ def _hungarian_numpy(cost_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         return cols, rows
     return rows, cols
 
-
 def linear_sum_assignment(cost_matrix: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
     """Assignment minimising the total cost; scipy if importable, else fallback."""
     array = cost_matrix.detach().cpu().numpy()
@@ -94,7 +87,6 @@ def linear_sum_assignment(cost_matrix: torch.Tensor) -> tuple[np.ndarray, np.nda
         return scipy_assignment(array)
     except ImportError:  # pragma: no cover - depends on the environment
         return _hungarian_numpy(array)
-
 
 class HungarianMatcher(torch.nn.Module):
     """Eq. (20) as a module so the cost weights follow the model around."""
@@ -111,7 +103,6 @@ class HungarianMatcher(torch.nn.Module):
         self.cost_bbox = cost_bbox
         self.weight_l1 = weight_l1
         self.weight_giou = weight_giou
-
     @torch.no_grad()
     def forward(
         self,
@@ -123,7 +114,6 @@ class HungarianMatcher(torch.nn.Module):
             class_logits: ``(B, N, C+1)``.
             boxes: ``(B, K, N, 4)`` predicted, normalized center-size.
             targets: output of :func:`pad_targets`.
-
         Returns B tensors ``(N, 2)`` of ``(prediction index, ground-truth slot)``.
         """
         batch, num_queries, num_classes_p1 = class_logits.shape
@@ -135,7 +125,6 @@ class HungarianMatcher(torch.nn.Module):
         for b in range(batch):
             count = int(targets["num_instances"][b])
             log_probs = F.log_softmax(class_logits[b].float(), dim=-1)
-
             cost = torch.zeros(
                 num_queries, num_queries, dtype=torch.float32, device=device
             )
@@ -143,7 +132,6 @@ class HungarianMatcher(torch.nn.Module):
                 labels = targets["labels"][b, :count]
                 gt_boxes = targets["boxes"][b, :, :count]  # (K, M, 4)
                 visibility = targets["visibility"][b, :, :count]  # (K, M)
-
                 cls_cost = -log_probs[:, labels]  # (N, M)
                 box_cost = torch.zeros(
                     num_queries, count, dtype=torch.float32, device=device
@@ -154,13 +142,11 @@ class HungarianMatcher(torch.nn.Module):
                     )
                     box_cost = box_cost + visibility[k].unsqueeze(0) * pair
                 cost[:, :count] = self.cost_class * cls_cost + self.cost_bbox * box_cost
-
             if count < num_queries:
                 empty_cost = -log_probs[:, num_classes].unsqueeze(1)
                 cost[:, count:] = self.cost_class * empty_cost.expand(
                     num_queries, num_queries - count
                 )
-
             rows, cols = linear_sum_assignment(cost)
             assignment = torch.stack(
                 [

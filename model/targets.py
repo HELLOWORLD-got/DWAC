@@ -7,7 +7,6 @@ K boxes, and every (instance, view) pair carries a visibility bit ``v_k,m``
 frustum but fully occluded".  Visibility decides whether a box enters the
 regression loss and whether the confidence target is 1 or 0.
 """
-
 from __future__ import annotations
 
 from typing import Sequence
@@ -24,7 +23,6 @@ def pad_targets(
     num_views: int | None = None,
 ) -> dict[str, torch.Tensor]:
     """Pack per-scene annotations into the fixed-size padded ground truth.
-
     Args:
         labels: B sequences of class labels, ``(M_b,)``.
         boxes: B tensors ``(K, M_b, 4)``, normalized ``(x, y, w, h)``.
@@ -32,14 +30,12 @@ def pad_targets(
         num_queries: N, the padded instance count.
         no_object_index: label written into padded slots, i.e. ``C``.
         num_views: K; inferred from ``boxes`` when omitted.
-
     Returns a dict with padded tensors and ``num_instances`` (the real M per
     scene, i.e. the indicator ``I(m)`` of Eq. 18 in count form).
     """
     batch = len(labels)
     num_views = num_views if num_views is not None else int(boxes[0].shape[0])
     device = boxes[0].device
-
     padded_labels = torch.full(
         (batch, num_queries), no_object_index, dtype=torch.long, device=device
     )
@@ -50,7 +46,6 @@ def pad_targets(
         (batch, num_views, num_queries), dtype=torch.float32, device=device
     )
     instance_count = torch.zeros(batch, dtype=torch.long, device=device)
-
     for b in range(batch):
         count = int(labels[b].shape[0])
         if count > num_queries:
@@ -64,7 +59,6 @@ def pad_targets(
             visibility[b], dtype=torch.float32, device=device
         )
         instance_count[b] = count
-
     mask = torch.arange(num_queries, device=device).unsqueeze(0) < instance_count.unsqueeze(1)
     return {
         "labels": padded_labels,

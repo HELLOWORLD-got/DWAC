@@ -1,111 +1,99 @@
-# Detection With Association Constraints · MDMT
+# 作者公开模型 + MDMT训练外围
 
-当前完整数据中心监督实验：参见 [完整 MDMT 实验](FULL_MDMT_EXPERIMENT.md)，启动命令为 `bash tools/run_full_center_training.sh`。
+`model/`完整保留作者仓库固定提交[e2076af](https://github.com/yyyyyxq/Instance-based-Association/tree/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model)的12个Python文件。没有本地新增的PE、实例残差、参考中心、中心监督、背景降权或logits损失。`AUTHOR_SOURCE.json`记录逐文件来源和SHA256，`tools/check.py`检查源文件是否改变。
 
-`model/` 是作者更新提交
-[`e2076af`](https://github.com/yyyyyxq/Instance-based-Association/tree/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model)
-中的源码为基础。当前仅修正了 `predict(class_threshold=...)` 放行背景类别的问题；
-该接口修正不改变训练前向、损失或现有验证解码。训练直接调用作者的模型、`pad_targets`、Hungarian matcher 和 SetCriterion。
-`training/` 负责 MDMT 数据加载、增强、训练接口和评估。旧版本的权重与新版架构不兼容。
+这份公开源码本身与论文文字有若干差异，本次按要求保留源码，不再自行改写模型或损失。因此这是“作者公开版本基线”，不能宣称已经完成论文指标复现。
 
-## 数据与参数
+## 目录
 
-从项目根目录运行命令。现有 `data/processed/MDMT/` 已包含三个训练所需清单。
-若需要从原始 MDMT 重新准备，可执行 `python prepare.py --verify-images`。
-使用官方测试 TXT 清单和现成的 ImageNet 权重时，训练可离线运行。
+```text
+model/             作者固定版本的模型、匹配、损失、GT填充
+training/          数据加载、训练/评估封装、DDP、梯度检查
+configs/           ResNet50、ViT两份完整MDMT配置
+train.py           训练、保存、恢复
+evaluate.py        验证/测试、预测导出
+infer.py           同步图像组推理
+prepare.py         原始数据生成清单
+tools/            check.py、prepare_data.py、score_official_mda.py
+tests/            作者模型与训练外围的必要回归测试
+data/             原始数据和已准备清单（保留）
+weights/          ImageNet预训练权重（保留）
+runs/             本基线的新实验输出
+改正/             改进版代码备份、30轮结果、审计及备份校验
+```
 
-| 参数 | 当前主配置 |
-| --- | --- |
-| 模型 | ResNet50，作者更新后的 MVFF、GIQ、MVOQ |
-| 优化器 | AdamW，学习率 1e-4，权重衰减 1e-5 |
-| 训练 | 全局 batch 4，100 轮，翻转、裁剪和颜色增强 |
-| 损失 | 作者实现，L1/GIoU 权重为 5/2 |
-| MDMT 适配 | 两视角、类别无关、256 个查询，输入高 405 × 宽 720 |
+## 配置边界
 
-训练、验证和测试有 12,026、1,930 和 5,883 组图像。完整验证集最多每组 221 个真实实例，
-因此容量设为 256。论文报告的 25 查询不足以覆盖这份完整清单。单前景类别沿用现有 MDMT 清单，
-避免跨视角类别冲突改变实例 ID。输入尺寸和小 batch 下冻结 ResNet 的 BN 运行统计是复现设置。
-MVOQ 的实例条件查询与 MVFF 的 1×1 投影沿用作者更新代码中对公式的具体实现。
+- 两视角、单前景类别，完整train/val/test分别12026/1930/5883组，不截断GT。
+- 作者模型默认25个query保持不改。MDMT配置使用256，因为完整验证集最大221个联合实例；这是显式数据容量适配，仍需作者确认论文MDMT实际query设置。
+- ResNet输入405×720；ViT输入416×720，避免patch16丢边界。
+- 作者原损失：所有槽等权分类和可见性BCE；L1/GIoU默认5/2。原有概率clamp也保留，没有暗中替换数学/数值实现。
+- AdamW：LR1e-4、weight decay1e-5、目标100轮、全局batch4，双卡每卡2；FP32。
+- 开启同步裁剪/翻转及颜色增强。外围默认冻结BN运行统计、clip_grad=1.0；这两项是显式工程设置，论文没有给出对应细节。
+- DDP仅对回归项按全局可见框数缩放，不增加损失项。验证在rank0执行，best按MDA优先、AP50次优。
+- 常用推理/评估使用外围decode；作者`predict`函数也原样保留。
+- MDA使用逐视角一对一匹配，空GT/空预测关联帧排除并记录；COCO AP使用maxDets=100。官方legacy分数另算，不保证二者完全相同。
 
-## 双 A6000 训练
+## 先检查，再做双卡小训练
 
-在服务器的 CUDA PyTorch 环境安装依赖：`python -m pip install -r requirements.txt`。
-如果使用了其他编号的空闲卡，调整 `CUDA_VISIBLE_DEVICES`。此前这台服务器的 P2P 通信曾卡住，
-以下命令保留了已验证可用的 `NCCL_P2P_DISABLE=1`。训练入口使用 FP32。
+在服务器项目根目录、已安装匹配的CUDA torch/torchvision环境中：
 
-先短测，一轮 16 组训练数据与 8 组验证数据，确认设备和通信：
+```bash
+python -m pip install -r requirements.txt
+python tools/check.py
+python -m unittest discover -s tests -v
+
+CUDA_VISIBLE_DEVICES=1,2 NCCL_P2P_DISABLE=1 \
+torchrun --nproc-per-node=2 --rdzv-backend=static \
+  --master-addr=127.0.0.1 --master-port=29643 train.py \
+  --config configs/mdmt_resnet50.json --device cuda \
+  --batch-size 4 --workers 0 --epochs 1 \
+  --limit-train 16 --limit-val 8 --progress bar \
+  --output runs/author_smoke
+```
+
+可选单卡真实最密集样本前后向：`CUDA_VISIBLE_DEVICES=1 python tools/check.py --device cuda --backward`。ViT使用`--config configs/mdmt_vit_b16.json`。
+
+## 新的完整基线训练
+
+小训练成功后，从ImageNet重新初始化，使用新目录；不要接着小训练或30轮改进版权重训练：
 
 ```bash
 CUDA_VISIBLE_DEVICES=1,2 NCCL_P2P_DISABLE=1 \
 torchrun --nproc-per-node=2 --rdzv-backend=static \
   --master-addr=127.0.0.1 --master-port=29643 train.py \
-  --device cuda --batch-size 4 --epochs 1 --workers 0 \
-  --limit-train 16 --limit-val 8 --output runs/author_gpu_check
+  --config configs/mdmt_resnet50.json --device cuda \
+  --batch-size 4 --workers 4 --epochs 100 --progress bar \
+  --save-failure-batch --output runs/mdmt_resnet50_author
 ```
 
-长训前可用单张空闲 GPU 检查学习能力。下面固定一对真实训练图像，关闭增强，
-使用当前完整模型和输入尺寸从 ImageNet 权重初始化，逐步报告框覆盖和正确关联：
+100为论文目标预算，不意味着建议不检查指标就等待100轮。每轮查看完整验证结果，保留日志。源码运行成功不保证达到论文成绩。
 
-```bash
-CUDA_VISIBLE_DEVICES=1 python tools/overfit.py --device cuda --steps 600
-```
-
-看 `raw_box_hits`（忽略分数的单视角框命中）、`raw_same_query_hits`（忽略分数的双视角同槽命中）、
-`AP50` 和 `true_associations` 能否持续改善。此测试只衡量模型记住训练样本的能力。
-
-固定多个场景可用 `--indices`，下面四组均不超过 25 个真实实例，索引对应完整训练清单。
-它们仍是训练样本，测试结果不能作为验证集成绩或论文复现成绩：
-
-```bash
-CUDA_VISIBLE_DEVICES=1 python tools/overfit.py \
-  --config configs/mdmt_resnet50_no_dropout.json --device cuda \
-  --indices 249 4140 7209 7955 --num-queries 25 --background-weight 0.1 \
-  --steps 400 --report-every 100 --output runs/four_scene_check/report.json
-```
-
-监督、数据几何、解码和梯度的回归检查：`python -m unittest discover -s tests -v`。
-检查通过只说明这些具体行为满足断言，不证明模型收敛或能复现论文成绩。
-
-完整 MDMT 需要保留足够的查询。若稀疏样本上前景学习失败，可在同一固定图像对上测试
-`--num-queries 256 --background-weight 0.1`。这一实验把匹配到填充背景的槽在分类和
-可见性损失中的相对权重降到 0.1，按每组样本的有效权重归一化。真实实例在某视角不可见
-时的负监督保持权重 1。Hungarian 匹配和框损失沿用作者实现。默认权重为 1，
-直接调用原始损失；启用降权的训练应使用新输出目录。续训时读取该次运行保存的配置。
-
-正式训练去掉样本限制，使用新目录。先跑 1～3 轮看完整验证集的 AP50、mAP、MDA 和正确关联数：
+同一基线断点续训：
 
 ```bash
 CUDA_VISIBLE_DEVICES=1,2 NCCL_P2P_DISABLE=1 \
 torchrun --nproc-per-node=2 --rdzv-backend=static \
   --master-addr=127.0.0.1 --master-port=29643 train.py \
-  --device cuda --batch-size 4 --workers 4 --epochs 3 --output runs/mdmt_author
+  --config runs/mdmt_resnet50_author/config.json \
+  --resume runs/mdmt_resnet50_author/last.pt \
+  --device cuda --epochs 100 --progress bar
 ```
 
-每轮写入 `history.jsonl` 和 `last.pt`。验证在 rank 0 跑完整验证集，
-`best.pt` 按 MDA 选优，MDA 相同时看 AP50。若指标趋势正常，用同一 `torchrun` 启动行替换脚本参数：
+## 评估与原始数据准备
 
 ```bash
-train.py --device cuda --config runs/mdmt_author/config.json \
-  --resume runs/mdmt_author/last.pt --epochs 100
+CUDA_VISIBLE_DEVICES=1 python evaluate.py \
+  --checkpoint runs/mdmt_resnet50_author/best.pt --split val --device cuda \
+  --output runs/mdmt_resnet50_author/val.json
+
+# 最终评估再使用--split test；可加--export-predictions导出官方适配器输入。
+# 数据已准备时不用重跑；从原始数据重建清单：
+python prepare.py --verify-images
 ```
 
-这里 `--epochs` 是目标总轮数，且 `--resume` 默认沿用检查点所在目录。
-`--batch-size` 是全局 batch，双卡计算时全局 4 对应每卡 2 组。
+## 备份与同步
 
-## 评估及推理
+改进版代码位于`改正/改进版代码/`，完整30轮模型/日志及诊断位于`改正/30轮实验结果/`。它们与当前作者基线隔离；当前训练入口会拒绝带改进模块/损失的配置和检查点。
 
-```bash
-CUDA_VISIBLE_DEVICES=1 python evaluate.py --device cuda \
-  --checkpoint runs/mdmt_author/best.pt --split test \
-  --output runs/mdmt_author/test_metrics.json \
-  --export-predictions runs/mdmt_author/test_predictions
-
-python tools/score_official_mda.py \
-  --predictions runs/mdmt_author/test_predictions \
-  --output runs/mdmt_author/test_official_mda.json
-```
-
-验证和测试输出 MDA、UCR、COCO mAP/50/75 及正确关联计数。官方旧 MDA 脚本单独记分。
-推理使用 `python infer.py --checkpoint ... --images camera1.jpg camera2.jpg`，
-共享 query ID 仅表示这些同步图像间的关联。
-如需 ViT，使用 `--config configs/mdmt_vit_b16.json`，并在新目录运行。
+`改正/`、`data/`、权重和新`runs/`被Git忽略。本次代码同步需要包括新增文件和删除记录，使用`git add -A`检查后提交。服务器`git pull`不会自动移动或删除其被忽略的旧实验；本次整理作用于本地。备份说明见`改正/说明.md`。

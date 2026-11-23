@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
-
 @dataclass
 class ModelConfig:
     # data
@@ -32,10 +31,6 @@ class ModelConfig:
     giq_layers: int = 3
     # MVOQ
     mvoq_layers: int = 2
-    # Experimental view-space encoding in MVOQ; "none" preserves old behavior.
-    mvoq_position_encoding: str = "none"
-    mvoq_instance_residual: bool = False
-    mvoq_center_mode: str = "direct"
     # matching / loss, Eq. (20)-(25)
     cost_class: float = 1.0
     cost_bbox: float = 1.0
@@ -44,7 +39,6 @@ class ModelConfig:
     weight_cls: float = 1.0
     weight_reg: float = 1.0
     weight_conf: float = 1.0
-
     def to_dict(self) -> dict:
         return asdict(self)
 

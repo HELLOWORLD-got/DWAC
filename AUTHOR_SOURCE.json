@@ -1,0 +1,55 @@
+{
+  "commit": "e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a",
+  "repository": "https://github.com/yyyyyxq/Instance-based-Association",
+  "note": "Pinned upstream source, no local architecture or loss changes; source line formatting may be normalized.",
+  "files": {
+    "model/__init__.py": {
+      "sha256": "c0f32d7f76d0dde94615d9f7e093db8ead062987695b4444a648e1535a698cc1",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/__init__.py"
+    },
+    "model/association.py": {
+      "sha256": "63b59dd84a036e8a5e772b28e5bcc50831d6515c96242086f7fbd20e5454a4d4",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/association.py"
+    },
+    "model/backbone.py": {
+      "sha256": "1e678f6210d8b223ead4793c41aaab052090bcdd7039c4b8566245a705c4e338",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/backbone.py"
+    },
+    "model/blocks.py": {
+      "sha256": "3bf5179cb195de629964322580753d7256bf23457d433ed27b839a99f2daf64e",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/blocks.py"
+    },
+    "model/box_ops.py": {
+      "sha256": "b68c07a8d63352d5f7401eb8c8381dca178dab3aa220930a8066454152a27f2f",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/box_ops.py"
+    },
+    "model/config.py": {
+      "sha256": "43a139f901818f57ee66d9aec15f61aadf67ec749be5401768fa7b9ec3b20329",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/config.py"
+    },
+    "model/giq.py": {
+      "sha256": "74449f362896aca1eb8b519f4c6b905a21dbada9d79188e8babc2f7bd5a1acb4",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/giq.py"
+    },
+    "model/loss.py": {
+      "sha256": "dfcc25384dad44798fd2c6f1ed44f40c553ff4a18f9b97573eee4372d5a61789",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/loss.py"
+    },
+    "model/matcher.py": {
+      "sha256": "9c495335a56b1561907fd086f3aac015d04d3e5abcf5dda0c9526bcbc20082b7",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/matcher.py"
+    },
+    "model/mvff.py": {
+      "sha256": "99447d45344528f72036d659fd5520297405175ea21a67524af10f3729ee1543",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/mvff.py"
+    },
+    "model/mvoq.py": {
+      "sha256": "7357964572382f47d9e5bdc797562a4cc39dd1319cdea1f5636ea23780172e92",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/mvoq.py"
+    },
+    "model/targets.py": {
+      "sha256": "e2d54b8371e3f08fc8b8cfef57f9dbee2b69a1068eda66baeec97650d7d47161",
+      "url": "https://raw.githubusercontent.com/yyyyyxq/Instance-based-Association/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model/targets.py"
+    }
+  }
+}

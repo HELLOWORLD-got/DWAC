@@ -7,14 +7,12 @@ instance features carry the identity of one physical object each.  The class
 head maps every instance feature to ``C + 1`` probabilities, the extra class
 being the no-object symbol of Eq. (10).
 """
-
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 
 from .blocks import DecoderBlock, PositionEncoding2D
-
 
 class GlobalInstanceQuery(nn.Module):
     def __init__(
@@ -31,13 +29,11 @@ class GlobalInstanceQuery(nn.Module):
         self.dim = dim
         self.num_queries = num_queries
         self.num_classes = num_classes
-
         self.instance_queries = nn.Parameter(torch.randn(num_queries, dim) * 0.02)
         self.position_encoding = PositionEncoding2D(dim)
         self.layers = nn.ModuleList(
             [DecoderBlock(dim, num_heads, ffn_ratio, dropout) for _ in range(num_layers)]
         )
-
         # Eq. (10): FFN + Softmax over C + 1 classes.
         self.class_head = nn.Sequential(
             nn.Linear(dim, 2 * dim),
@@ -48,7 +44,6 @@ class GlobalInstanceQuery(nn.Module):
 
     def forward(self, global_feature: torch.Tensor) -> dict[str, torch.Tensor]:
         """``global_feature``: ``F_G`` of shape ``(B, dim, H', W')``.
-
         Returns instance features ``(B, N, dim)`` and the class distribution
         ``(B, N, C+1)``.  The no-object column is the last one, ``index C``.
         """
@@ -58,7 +53,6 @@ class GlobalInstanceQuery(nn.Module):
             height, width, device=global_feature.device, dtype=global_feature.dtype
         )
         memory = memory + pe.unsqueeze(0)
-
         queries = self.instance_queries.unsqueeze(0).expand(batch, -1, -1)
         for layer in self.layers:
             queries = layer(queries, memory)

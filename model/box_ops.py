@@ -17,7 +17,6 @@ import torch
 
 EPS = 1e-7
 
-
 def box_xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     """(..., 4) center-size -> corner form, clamped to [0, 1]."""
     x, y, w, h = boxes.unbind(-1)
@@ -26,7 +25,6 @@ def box_xywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     x2 = (x + 0.5 * w).clamp(max=1.0)
     y2 = (y + 0.5 * h).clamp(max=1.0)
     return torch.stack([x1, y1, x2, y2], dim=-1)
-
 
 def box_area(boxes_xyxy: torch.Tensor) -> torch.Tensor:
     return (boxes_xyxy[..., 2] - boxes_xyxy[..., 0]).clamp(min=0.0) * (
@@ -38,7 +36,6 @@ def box_l1(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
     """``|| pred - target ||_1`` over the four coordinates (same shapes)."""
     return (pred - target).abs().sum(dim=-1)
 
-
 def _giou_same(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     """GIoU of corresponding boxes, shapes ``(..., 4)`` in corner form."""
     area_a, area_b = box_area(a), box_area(b)
@@ -48,13 +45,11 @@ def _giou_same(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     inter = wh[..., 0] * wh[..., 1]
     union = area_a + area_b - inter
     iou = inter / union.clamp(min=EPS)
-
     lt_enclosing = torch.min(a[..., :2], b[..., :2])
     rb_enclosing = torch.max(a[..., 2:], b[..., 2:])
     wh_enclosing = (rb_enclosing - lt_enclosing).clamp(min=0.0)
     enclosing = wh_enclosing[..., 0] * wh_enclosing[..., 1]
     return iou - (enclosing - union) / enclosing.clamp(min=EPS)
-
 
 def generalized_iou_pairwise(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torch.Tensor:
     """GIoU between two corner-form sets: ``(N, 4)`` x ``(M, 4)`` -> ``(N, M)``."""
@@ -66,13 +61,11 @@ def generalized_iou_pairwise(boxes1: torch.Tensor, boxes2: torch.Tensor) -> torc
     inter = wh[..., 0] * wh[..., 1]
     union = area1 + area2 - inter
     iou = inter / union.clamp(min=EPS)
-
     lt_enclosing = torch.min(boxes1[:, None, :2], boxes2[None, :, :2])
     rb_enclosing = torch.max(boxes1[:, None, 2:], boxes2[None, :, 2:])
     wh_enclosing = (rb_enclosing - lt_enclosing).clamp(min=0.0)
     enclosing = wh_enclosing[..., 0] * wh_enclosing[..., 1]
     return iou - (enclosing - union) / enclosing.clamp(min=EPS)
-
 
 def box_loss_pairwise(
     pred: torch.Tensor,
@@ -86,7 +79,6 @@ def box_loss_pairwise(
     giou = generalized_iou_pairwise(pred_xyxy, target_xyxy)
     l1 = (pred[:, None, :] - target[None, :, :]).abs().sum(dim=-1)
     return weight_l1 * l1 + weight_giou * (1.0 - giou)
-
 
 def box_loss(
     pred: torch.Tensor,

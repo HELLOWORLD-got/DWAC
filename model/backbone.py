@@ -11,7 +11,6 @@ Spatial reduction: ResNet-50 -> /32, ViT-B/16 -> /16.
 from __future__ import annotations
 
 import warnings
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -26,7 +25,6 @@ def _load_weights(kind: str, pretrained: bool):
     """
     try:
         import torchvision.models as tvm
-
         if kind == "resnet50":
             return tvm.ResNet50_Weights.IMAGENET1K_V2 if pretrained else None
         if kind == "vit_b_16":
@@ -36,7 +34,6 @@ def _load_weights(kind: str, pretrained: bool):
         return None
     return None
 
-
 class ResNetBackbone(nn.Module):
     """ResNet-50 truncated after ``layer4`` + 1x1 projection to ``dim``."""
 
@@ -45,7 +42,6 @@ class ResNetBackbone(nn.Module):
     def __init__(self, dim: int = 256, pretrained: bool = True) -> None:
         super().__init__()
         from torchvision.models import resnet50
-
         weights = _load_weights("resnet50", pretrained)
         try:
             net = resnet50(weights=weights)
@@ -66,7 +62,6 @@ class ResNetBackbone(nn.Module):
         self.channels = 2048
         self.projection = nn.Conv2d(self.channels, dim, kernel_size=1)
         self.dim = dim
-
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         return self.projection(self.stem(images))
 
@@ -79,11 +74,9 @@ class ViTBackbone(nn.Module):
     """
 
     stride = 16
-
     def __init__(self, dim: int = 256, pretrained: bool = True) -> None:
         super().__init__()
         from torchvision.models import vit_b_16
-
         weights = _load_weights("vit_b_16", pretrained)
         try:
             vit = vit_b_16(weights=weights)
@@ -95,7 +88,6 @@ class ViTBackbone(nn.Module):
         self.patch = 16
         self.projection = nn.Conv2d(self.channels, dim, kernel_size=1)
         self.dim = dim
-
     def _position_embedding(self, gh: int, gw: int) -> torch.Tensor:
         pos = self.vit.encoder.pos_embedding  # (1, 1 + 14*14, 768)
         cls_pos, patch_pos = pos[:, :1], pos[:, 1:]
@@ -107,7 +99,6 @@ class ViTBackbone(nn.Module):
             )
         patch_pos = patch_pos.permute(0, 2, 3, 1).reshape(1, gh * gw, -1)
         return torch.cat([cls_pos, patch_pos], dim=1)
-
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         batch = images.shape[0]
         tokens = self.vit.conv_proj(images)  # (B, 768, gh, gw)
@@ -121,7 +112,6 @@ class ViTBackbone(nn.Module):
         patches = tokens[:, 1:]
         grid = patches.transpose(1, 2).reshape(batch, self.channels, gh, gw)
         return self.projection(grid)
-
 
 def build_backbone(
     name: str = "resnet50", dim: int = 256, pretrained: bool = True

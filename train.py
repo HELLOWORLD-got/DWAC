@@ -26,6 +26,30 @@ def save_checkpoint(path, checkpoint):
     temporary.replace(path)
 
 
+def resume_stage_metadata(checkpoint, settings, source, output, allow_changes):
+    """A fork has its own best checkpoint, even with unchanged optimization."""
+    saved = checkpoint["config"]["training"]
+    keys = ("lr", "clip_grad")
+    defaults = {}
+    changed = {
+        key: dict(old=saved.get(key, defaults.get(key)),
+                  new=settings.get(key, defaults.get(key)))
+        for key in keys
+        if saved.get(key, defaults.get(key)) != settings.get(key, defaults.get(key))
+    }
+    forked = Path(output).resolve() != Path(source).resolve().parent
+    if changed and not allow_changes:
+        raise ValueError(f"Resume changed optimization settings: {', '.join(changed)}")
+    if changed and not forked:
+        raise ValueError("Optimization changes require a new --output directory")
+    if changed or forked:
+        return (-1., -1.), dict(
+            source_checkpoint=str(Path(source).resolve()), source_epoch=checkpoint["epoch"],
+            changes=changed, source_validation=checkpoint.get("validation"),
+        )
+    return tuple(checkpoint["best"]), checkpoint.get("optimization_changes")
+
+
 def run(args, config, device, rank, world):
     train_settings = config["training"]
     batch = train_settings["batch_size"]
@@ -48,7 +72,14 @@ def run(args, config, device, rank, world):
         checkpoint = torch.load(args.resume, map_location="cpu", weights_only=True)
         saved = checkpoint["config"]
         # Fill added defaults for legacy checkpoints without allowing mode changes.
-        model_changed = asdict(ModelConfig(**config["model"])) != asdict(ModelConfig(**saved["model"]))
+        try:
+            model_changed = asdict(ModelConfig(**config["model"])) != asdict(ModelConfig(**saved["model"]))
+        except TypeError as error:
+            raise ValueError("Improved checkpoints must use the backed-up code under 改正/改进版代码") from error
+        if (saved.get("training", {}).get("background_weight", 1.) != 1. or
+                saved.get("training", {}).get("center_loss_weight", 0.) != 0. or
+                saved.get("training", {}).get("confidence_loss_mode", "probability") != "probability"):
+            raise ValueError("Checkpoint uses a modified loss; restore it with the backed-up code")
         if model_changed or any(config[key] != saved[key] for key in ("data", "evaluation")):
             raise ValueError("Resume requires the same model, data and evaluation settings")
         for key in ("batch_size", "lr", "weight_decay", "seed", "freeze_bn_stats",
@@ -56,24 +87,10 @@ def run(args, config, device, rank, world):
             if (train_settings[key] != saved["training"][key] and
                     not (args.allow_optimization_change and key in ("lr", "clip_grad"))):
                 raise ValueError(f"Resume changed training setting {key}")
-        if train_settings["background_weight"] != saved["training"].get("background_weight", 1.0):
-            raise ValueError("Resume requires the same background weight")
-        if train_settings.get("freeze_backbone_stem", False) != saved["training"].get("freeze_backbone_stem", False):
-            raise ValueError("Resume requires the same backbone freezing setting")
-        if train_settings.get("center_loss_weight", 0.) != saved["training"].get("center_loss_weight", 0.):
-            raise ValueError("Resume requires the same center supervision weight")
         start = checkpoint["epoch"]
-        best = tuple(checkpoint["best"])
-        changed = {key: dict(old=saved['training'].get(key), new=train_settings.get(key))
-                   for key in ('lr', 'clip_grad') if saved['training'].get(key) != train_settings.get(key)}
-        optimization_changes = checkpoint.get('optimization_changes')
-        if changed:
-            if output.resolve() == Path(args.resume).resolve().parent:
-                raise ValueError('Optimization changes require a new --output directory')
-            optimization_changes = dict(source_checkpoint=str(Path(args.resume).resolve()),
-                                        source_epoch=start, changes=changed,
-                                        source_validation=checkpoint.get('validation'))
-            best = (-1., -1.)  # best among the new optimization stage's epochs
+        best, optimization_changes = resume_stage_metadata(
+            checkpoint, train_settings, args.resume, output, args.allow_optimization_change
+        )
     if start >= train_settings["epochs"]:
         if rank == 0:
             print(f"Checkpoint already completed {start} epochs.")
@@ -119,7 +136,7 @@ def run(args, config, device, rank, world):
         total_loss = 0.0
         grad_norm_max = 0.
         norm_overflow_recoveries = 0
-        component_names = ("loss_cls", "loss_reg", "loss_conf", "loss_center")
+        component_names = ("loss_cls", "loss_reg", "loss_conf")
         component_sums = [0.0] * len(component_names)
         samples = 0
         if device.type == "cuda":
@@ -199,11 +216,8 @@ def run(args, config, device, rank, world):
                           rank0_norm_overflow_recoveries=norm_overflow_recoveries)
             record["train_losses"] = {
                 name: float(totals[index+2] / totals[1])
-                for index, name in enumerate(("classification", "regression", "confidence", "center"))
+                for index, name in enumerate(("classification", "regression", "confidence"))
             }
-            position_logit = getattr(raw.mvoq, "position_logit", None)
-            if position_logit is not None:
-                record["mvoq_position_scale"] = float(position_logit.detach().sigmoid())
             state = dict(model=raw.state_dict(), optimizer=optimizer.state_dict(),
                          config=config, epoch=epoch, best=best,
                          rank_rng_states=states, world_size=world, validation=result)
@@ -229,7 +243,7 @@ def main():
     parser.add_argument("--output")
     parser.add_argument("--resume")
     parser.add_argument('--allow-optimization-change', action='store_true',
-                        help='Allow LR/clip changes on resume into a NEW output directory')
+                        help='Allow LR/clip changes into a NEW output directory')
     parser.add_argument('--save-failure-batch', action='store_true',
                         help='Save model and input batch for backward-error replay')
     parser.add_argument("--epochs", type=int)
@@ -238,7 +252,6 @@ def main():
     parser.add_argument("--limit-train", type=int)
     parser.add_argument("--limit-val", type=int)
     parser.add_argument("--clip-grad", type=float, help="Optional gradient clipping norm")
-    parser.add_argument("--background-weight", type=float, help="Loss weight of padded slots, in (0, 1]")
     parser.add_argument("--random-init", action="store_true")
     parser.add_argument("--progress", choices=("auto", "bar", "log"), default="auto")
     args = parser.parse_args()
@@ -246,10 +259,6 @@ def main():
         parser.error('--allow-optimization-change requires --resume')
     config = load_config(args.config)
     training = config["training"]
-    if args.background_weight is not None:
-        training["background_weight"] = args.background_weight
-    if not 0 < training["background_weight"] <= 1:
-        parser.error("--background-weight must be in (0, 1]")
     for key in ("epochs", "batch_size", "workers"):
         if getattr(args, key) is not None:
             training[key] = getattr(args, key)
@@ -264,8 +273,11 @@ def main():
         args.clip_grad = training.get("clip_grad")
     training["clip_grad"] = args.clip_grad
     if (not math.isfinite(training['lr']) or training['lr'] <= 0 or
-            (args.clip_grad is not None and not math.isfinite(args.clip_grad))):
+            (args.clip_grad is not None and
+             (not math.isfinite(args.clip_grad) or args.clip_grad <= 0))):
         parser.error('Learning rate and clipping cap must be finite and positive')
+    if training.get("optimizer", "adamw").lower() != "adamw":
+        parser.error('Only optimizer=adamw is implemented')
     training["limit_train"] = args.limit_train if args.limit_train is not None else training.get("limit_train")
     training["limit_val"] = args.limit_val if args.limit_val is not None else training.get("limit_val")
     args.limit_train, args.limit_val = training["limit_train"], training["limit_val"]

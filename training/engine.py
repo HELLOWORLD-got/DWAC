@@ -13,17 +13,30 @@ from tqdm import tqdm
 
 from model import ModelConfig, TrainConfig, build_model as build_author_model
 from model import pad_targets
-from .background_loss import BackgroundWeightedLoss
-from .center_loss import CenterSupervisionLoss
 from .data import MultiViewDataset, collate
 from .metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
 
+def author_model_config(config):
+    try:
+        model_config = ModelConfig(**config["model"])
+    except TypeError as error:
+        raise ValueError("This entry point accepts only the author model. Improved configs belong in 改正/改进版代码.") from error
+    experimental = config.get("training", {})
+    if (experimental.get("background_weight", 1.) != 1. or
+            experimental.get("center_loss_weight", 0.) != 0. or
+            experimental.get("confidence_loss_mode", "probability") != "probability"):
+        raise ValueError("Modified losses are not supported by the author-only training entry point")
+    return model_config
+
+
 def load_config(path):
     data = json.loads(Path(path).read_text())
-    data["model"] = asdict(ModelConfig(**data["model"]))
+    data["model"] = asdict(author_model_config(data))
+    data["author_commit"] = "e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a"
     defaults = {**asdict(TrainConfig()), "workers": 4, "seed": 42,
-                "freeze_bn_stats": True, "background_weight": 1.0}
+                "freeze_bn_stats": True, "clip_grad": 1.0,
+                "limit_train": None, "limit_val": None}
     data["training"] = defaults | data.get("training", {})
     return data
 
@@ -34,20 +47,16 @@ def seed_all(seed):
 
 
 def build_criterion(net, config):
-    criterion = net.build_criterion()
-    weight = config["training"].get("background_weight", 1.0)
-    if weight != 1.0:
-        criterion = BackgroundWeightedLoss(criterion, weight)
-    center_weight = config["training"].get("center_loss_weight", 0.)
-    if center_weight:
-        if config["model"].get("mvoq_center_mode", "direct") != "attention_reference":
-            raise ValueError("Center supervision requires attention_reference center mode")
-        criterion = CenterSupervisionLoss(criterion, center_weight)
-    return criterion
+    """Use the pinned author's SetCriterion without loss wrappers."""
+    author_model_config(config)
+    return net.build_criterion()
 
 
 def build_model(config, initialize_weights=False):
-    model_config = ModelConfig(**config["model"])
+    model_config = author_model_config(config)
+    if model_config.backbone in ("vit_b16", "vit_b_16", "vit", "vit-b/16"):
+        if config["data"]["height"] % 16 or config["data"]["width"] % 16:
+            raise ValueError("ViT input dimensions must be divisible by 16")
     # Load the configured weights explicitly, avoiding a silent random-init fallback.
     net = build_author_model(replace(model_config, pretrained=False))
     backbone = net.backbone
@@ -72,11 +81,6 @@ def build_model(config, initialize_weights=False):
     if is_vit:
         # The author's forward uses patch features and never calls the classifier.
         backbone.vit.heads.requires_grad_(False)
-    if config["training"].get("freeze_backbone_stem", False):
-        if is_vit or model_config.freeze_backbone:
-            raise ValueError("freeze_backbone_stem requires ResNet and freeze_backbone=false")
-        # Keep the randomly initialized 2048->256 projection trainable.
-        backbone.stem.requires_grad_(False)
     return net
 
 
@@ -87,8 +91,6 @@ def freeze_training_bn(net, config):
         for layer in net.backbone.modules():
             if isinstance(layer, torch.nn.modules.batchnorm._BatchNorm):
                 layer.eval()
-    if config["training"].get("freeze_backbone_stem", False):
-        net.backbone.stem.eval()
 
 
 def make_loader(config, split, device, *, batch_size, workers, limit=None, rank=0, world=1):
@@ -126,9 +128,6 @@ def forward_loss(net, criterion, images, targets, device, distributed=False):
     visible_count = int(padded["visibility"].sum())
     padded = {k: v.to(device) for k, v in padded.items()}
     predictions = {k: outputs[k].float() for k in ("class_logits", "boxes", "confidences")}
-    for key in ("center_attention", "center_grid", "center_grid_scale", "reference_points"):
-        if key in outputs:
-            predictions[key] = outputs[key].float()
     finite = torch.stack([torch.isfinite(t).all() for t in predictions.values()]).all()
     if not finite:
         samples = ", ".join(f"{t['sequence']}:{t['frame']}" for t in targets)
@@ -141,12 +140,10 @@ def forward_loss(net, criterion, images, targets, device, distributed=False):
         losses["loss_reg"] = (
             losses["loss_reg"] * local_count * dist.get_world_size() / total_count.clamp_min(1)
         )
-        if "loss_center" in losses:
-            losses["loss_center"] = losses["loss_center"] * local_count * dist.get_world_size() / total_count.clamp_min(1)
     # An all-background batch otherwise has no gradient path through the box heads.
     losses["loss"] = (
         losses["loss_cls"] + losses["loss_reg"] + losses["loss_conf"] +
-        losses.get("loss_center", 0.) + predictions["boxes"].sum() * 0
+        predictions["boxes"].sum() * 0
     )
     return predictions, losses, visible_count
 
@@ -159,7 +156,7 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
     detection = DetectionMetrics(config["model"]["num_classes"])
     exports = {}
     n = visible_total = 0
-    cls = reg = conf = center = 0.0
+    cls = reg = conf = 0.0
     for images, targets in tqdm(loader, desc="Val", unit="batch", disable=not progress):
         outputs, losses, visible_count = forward_loss(net, criterion, images, targets, device)
         n += len(targets)
@@ -167,8 +164,6 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
         cls += losses["loss_cls"].item() * len(targets)
         reg += losses["loss_reg"].item() * visible_count
         conf += losses["loss_conf"].item() * len(targets)
-        if "loss_center" in losses:
-            center += losses["loss_center"].item() * visible_count
         for pred, target in zip(decode(outputs, settings["confidence_threshold"]), targets):
             association.update(pred, target)
             detection.update(pred, target)
@@ -188,7 +183,4 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
             (path / f"{key}.json").write_text(json.dumps(frames))
     cls, reg, conf = cls / n, reg / max(visible_total, 1), conf / n
     loss_report = dict(loss=cls + reg + conf, classification=cls, regression=reg, confidence=conf)
-    if config["training"].get("center_loss_weight", 0.):
-        loss_report["center"] = center / max(visible_total, 1)
-        loss_report["loss"] += loss_report["center"]
     return {**association.compute(), **detection.compute(), "samples": n, "losses": loss_report}

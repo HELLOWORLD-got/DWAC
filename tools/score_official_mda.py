@@ -17,7 +17,7 @@ def score(predictions, ground_truth, source):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     scores = {}
-    frames_count = 0
+    frames_count = empty_frames = scored_frames = 0
     for first in sorted(Path(predictions).glob("*-1.json")):
         clip = first.stem.rsplit("-", 1)[0]
         second = first.with_name(clip + "-2.json")
@@ -42,18 +42,38 @@ def score(predictions, ground_truth, source):
                 gt = mod.GTTarget(0, frame, view, int(v[1]), x, y, x + w, y + h)
                 (frames[frame].gtA if view == 1 else frames[frame].gtB).append(gt)
         ordered = [frames[key] for key in sorted(frames)]
+        eligible = []
+        zero_scores = skipped = 0
+        for frame in ordered:
+            gt_shared = {t.ID for t in frame.gtA} & {t.ID for t in frame.gtB}
+            if gt_shared:
+                eligible.append(frame)
+            elif {t.ID for t in frame.resultA} & {t.ID for t in frame.resultB}:
+                # With no shared GT, every predicted association is false.
+                # Also avoids the legacy evaluator indexing a missing GT pair.
+                zero_scores += 1
+            else:
+                skipped += 1
         with contextlib.redirect_stdout(io.StringIO()):
-            value = mod.calAAS(ordered)
-        scores[clip] = value
+            numerator = mod.calAAS(eligible) * len(eligible) if eligible else 0.0
+        count = len(eligible) + zero_scores
+        scores[clip] = numerator / count if count else None
+        empty_frames += skipped
+        scored_frames += count
         frames_count += len(frames)
     if not scores:
         raise ValueError("No paired prediction JSON files")
     return dict(
-        MDA_legacy_official=sum(scores.values()) / len(scores),
+        MDA_legacy_official=(sum(v for v in scores.values() if v is not None) /
+                             max(1, sum(v is not None for v in scores.values()))),
         per_sequence=scores,
         frames=frames_count,
+        scored_frames=scored_frames,
+        empty_association_frames=empty_frames,
         implementation=str(source),
-        note="Legacy official evaluator, unmodified matching behavior. Frame subset is exactly the exported prediction keys.",
+        note=("Legacy matching on frames with shared GT. Frames with no shared GT and no "
+              "predicted associations are excluded; predicted associations with no shared GT score zero. "
+              "Other legacy duplicate/orphan handling is unchanged. Frame subset is exactly the export keys."),
     )
 
 

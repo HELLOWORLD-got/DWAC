@@ -1,18 +1,15 @@
 """Top-level model, Eq. (1)-(4) and Eq. (14).
 
     Y_hat = { ( p_hat_i, { (b_hat_1i, s_hat_1i), ..., (b_hat_Ki, s_hat_Ki) } ) }
-
-Instance query i is a single slot of the
+Why the association cannot conflict: instance query i is a single slot of the
 whole scene.  Whatever the K per-view object queries predict, they are reported
 under the same global ID i, and there is exactly one box per (view, ID) pair —
-so no ID appears twice in one view. This indexing constraint does not prove
-that two slots cannot detect the same physical object, or that one slot's
-boxes identify the same physical object in all views. Those semantic
-correspondences must be learned.
+so one physical object can never receive two IDs, and no ID appears twice in
+one view.  This is the structural answer the paper gives to the conflicting
+association problem; it is not a post-processing step.
 """
 
 from __future__ import annotations
-
 import torch
 import torch.nn as nn
 
@@ -24,7 +21,6 @@ from .matcher import HungarianMatcher
 from .mvoq import MultiViewObjectQuery
 from .mvff import MultiViewFeatureFusion
 
-
 class ConflictFreeMultiViewAssociation(nn.Module):
     def __init__(self, config: ModelConfig | None = None, **overrides) -> None:
         super().__init__()
@@ -34,14 +30,12 @@ class ConflictFreeMultiViewAssociation(nn.Module):
 
             config = replace(config, **overrides)
         self.config = config
-
         self.backbone = build_backbone(
             config.backbone, config.hidden_dim, config.pretrained
         )
         if config.freeze_backbone:
             for parameter in self.backbone.parameters():
                 parameter.requires_grad_(False)
-
         self.mvff = MultiViewFeatureFusion(
             dim=config.hidden_dim,
             num_heads=config.num_heads,
@@ -67,11 +61,7 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             num_layers=config.mvoq_layers,
             ffn_ratio=config.ffn_ratio,
             dropout=config.dropout,
-            position_encoding=config.mvoq_position_encoding,
-            instance_residual=config.mvoq_instance_residual,
-            center_mode=config.mvoq_center_mode,
         )
-
     # ------------------------------------------------------------------ #
     def _as_view_list(self, images) -> list[torch.Tensor]:
         if isinstance(images, torch.Tensor):
@@ -85,7 +75,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
         if not views:
             raise ValueError("expected at least one view")
         return views
-
     def forward(self, images) -> dict[str, torch.Tensor]:
         """Args:
             images: list of K tensors, each ``(B, 3, H, W)``, or one tensor
@@ -97,7 +86,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             ``confidences`` ``(B, K, N)``, plus the intermediate features.
         """
         views = self._as_view_list(images)
-
         # Eq. (5): per-view features.
         view_features = [self.backbone(view) for view in views]
         # Eq. (2): multi-view fusion.
@@ -106,8 +94,7 @@ class ConflictFreeMultiViewAssociation(nn.Module):
         giq_output = self.giq(global_feature)
         # Eq. (4): per-view object queries.
         mvoq_output = self.mvoq(giq_output["instance_features"], view_features)
-
-        output = {
+        return {
             "class_logits": giq_output["class_logits"],
             "class_probs": giq_output["class_probs"],
             "instance_features": giq_output["instance_features"],
@@ -116,11 +103,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             "global_feature": global_feature,
             "view_features": view_features,
         }
-        for key in ("center_attention", "center_grid", "center_grid_scale", "reference_points"):
-            if key in mvoq_output:
-                output[key] = mvoq_output[key]
-        return output
-
     # ------------------------------------------------------------------ #
     @torch.no_grad()
     def predict(
@@ -133,7 +115,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
 
         Each detection carries the instance index ``i`` as its global ID, which
         is the model's identity output (Eq. 14).  Sorted by confidence.
-
         Returns one dict per batch element::
 
             {"labels": (K, N), "boxes": (K, N, 4), "scores": (K, N),
@@ -145,14 +126,13 @@ class ConflictFreeMultiViewAssociation(nn.Module):
         confidences = outputs["confidences"]
         num_classes = self.config.num_classes
         batch, num_views, num_queries = confidences.shape
-
         labels = class_probs.argmax(dim=-1)  # (B, N)
         class_scores = class_probs.gather(-1, labels.unsqueeze(-1)).squeeze(-1)
-        keep = (labels != num_classes).unsqueeze(1)  # (B, 1, N)
         if class_threshold is not None:
-            keep = keep & (class_scores >= class_threshold).unsqueeze(1)
+            keep = (class_scores >= class_threshold).unsqueeze(1)
+        else:
+            keep = (labels != num_classes).unsqueeze(1)  # (B, 1, N)
         valid = keep & (confidences >= score_threshold)
-
         results = []
         for b in range(batch):
             per_view = []
@@ -177,7 +157,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
                 }
             )
         return results
-
     # ------------------------------------------------------------------ #
     def build_criterion(self) -> SetCriterion:
         """Loss + matcher with the weights of ``self.config``."""
@@ -196,7 +175,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             weight_l1=self.config.weight_l1,
             weight_giou=self.config.weight_giou,
         )
-
     def count_parameters(self) -> dict[str, int]:
         total = sum(p.numel() for p in self.parameters())
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -207,7 +185,6 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             "backbone": backbone,
             "heads": total - backbone,
         }
-
 
 def build_model(config: ModelConfig | None = None, **overrides) -> ConflictFreeMultiViewAssociation:
     return ConflictFreeMultiViewAssociation(config, **overrides)
