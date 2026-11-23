@@ -56,6 +56,8 @@ def run(args, config, device, rank, world):
             raise ValueError("Resume requires the same background weight")
         if train_settings.get("freeze_backbone_stem", False) != saved["training"].get("freeze_backbone_stem", False):
             raise ValueError("Resume requires the same backbone freezing setting")
+        if train_settings.get("center_loss_weight", 0.) != saved["training"].get("center_loss_weight", 0.):
+            raise ValueError("Resume requires the same center supervision weight")
         start = checkpoint["epoch"]
         best = tuple(checkpoint["best"])
     if start >= train_settings["epochs"]:
@@ -96,6 +98,8 @@ def run(args, config, device, rank, world):
         freeze_training_bn(raw, config)
         began = time.monotonic()
         total_loss = 0.0
+        component_names = ("loss_cls", "loss_reg", "loss_conf", "loss_center")
+        component_sums = [0.0] * len(component_names)
         samples = 0
         if device.type == "cuda":
             torch.cuda.reset_peak_memory_stats(device)
@@ -118,12 +122,15 @@ def run(args, config, device, rank, world):
                     raise RuntimeError(f"rank={rank}, epoch={epoch}, batch={index}: {exc}") from exc
                 value = loss.item()
                 total_loss += value * len(targets)
+                for component, name in enumerate(component_names):
+                    if name in losses:
+                        component_sums[component] += losses[name].item() * len(targets)
                 samples += len(targets)
                 if show_bar:
                     batches.set_postfix(loss=f"{value:.4f}", avg=f"{total_loss / samples:.4f}")
                 elif rank == 0 and (index == 1 or index % 50 == 0 or index == len(train)):
                     print(f"Train {epoch} {index}/{len(train)} loss={value:.5f}", flush=True)
-        totals = torch.tensor([total_loss, samples], dtype=torch.float64, device=device)
+        totals = torch.tensor([total_loss, samples, *component_sums], dtype=torch.float64, device=device)
         if world > 1:
             dist.all_reduce(totals)
         train_seconds = time.monotonic() - began
@@ -141,6 +148,10 @@ def run(args, config, device, rank, world):
                           train_samples_per_second=float(totals[1]) / train_seconds,
                           rank0_train_peak_allocated_gib=train_peak,
                           elapsed_seconds=time.monotonic() - began, validation=result)
+            record["train_losses"] = {
+                name: float(totals[index+2] / totals[1])
+                for index, name in enumerate(("classification", "regression", "confidence", "center"))
+            }
             position_logit = getattr(raw.mvoq, "position_logit", None)
             if position_logit is not None:
                 record["mvoq_position_scale"] = float(position_logit.detach().sigmoid())

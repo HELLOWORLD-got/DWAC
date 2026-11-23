@@ -172,6 +172,8 @@ def main():
         "confidence_threshold": config["evaluation"]["confidence_threshold"],
         "backbone": config["model"]["backbone"],
         "mvoq_position_encoding": config["model"].get("mvoq_position_encoding", "none"),
+        "mvoq_center_mode": config["model"].get("mvoq_center_mode", "direct"),
+        "center_loss_weight": config["training"].get("center_loss_weight", 0.),
         "diagnostic_note": "Oracle center/size uses GT for each pair; not achievable metrics or an exclusive error decomposition.",
     }
     del checkpoint

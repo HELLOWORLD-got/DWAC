@@ -17,7 +17,7 @@ class BackgroundWeightedLoss(nn.Module):
         self.author = author_loss
         self.background_weight = background_weight
 
-    def forward(self, outputs, targets):
+    def forward(self, outputs, targets, *, return_assignments=False):
         cls, boxes, conf = (outputs[key] for key in ("class_logits", "boxes", "confidences"))
         assignment = torch.stack(self.author.matcher(cls, boxes, targets))
         matched = torch.empty_like(assignment[..., 1]).scatter_(
@@ -46,5 +46,6 @@ class BackgroundWeightedLoss(nn.Module):
         loss_cls = loss_cls * self.author.weight_cls
         loss_reg = loss_reg * self.author.weight_reg
         loss_conf = loss_conf * self.author.weight_conf
-        return dict(loss=loss_cls + loss_reg + loss_conf, loss_cls=loss_cls,
-                    loss_reg=loss_reg, loss_conf=loss_conf)
+        losses = dict(loss=loss_cls + loss_reg + loss_conf, loss_cls=loss_cls,
+                      loss_reg=loss_reg, loss_conf=loss_conf)
+        return (losses, assignment) if return_assignments else losses

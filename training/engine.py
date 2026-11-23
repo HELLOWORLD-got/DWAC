@@ -14,6 +14,7 @@ from tqdm import tqdm
 from model import ModelConfig, TrainConfig, build_model as build_author_model
 from model import pad_targets
 from .background_loss import BackgroundWeightedLoss
+from .center_loss import CenterSupervisionLoss
 from .data import MultiViewDataset, collate
 from .metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
@@ -35,9 +36,14 @@ def seed_all(seed):
 def build_criterion(net, config):
     criterion = net.build_criterion()
     weight = config["training"].get("background_weight", 1.0)
-    if weight == 1.0:
-        return criterion
-    return BackgroundWeightedLoss(criterion, weight)
+    if weight != 1.0:
+        criterion = BackgroundWeightedLoss(criterion, weight)
+    center_weight = config["training"].get("center_loss_weight", 0.)
+    if center_weight:
+        if config["model"].get("mvoq_center_mode", "direct") != "attention_reference":
+            raise ValueError("Center supervision requires attention_reference center mode")
+        criterion = CenterSupervisionLoss(criterion, center_weight)
+    return criterion
 
 
 def build_model(config, initialize_weights=False):
@@ -120,6 +126,9 @@ def forward_loss(net, criterion, images, targets, device, distributed=False):
     visible_count = int(padded["visibility"].sum())
     padded = {k: v.to(device) for k, v in padded.items()}
     predictions = {k: outputs[k].float() for k in ("class_logits", "boxes", "confidences")}
+    for key in ("center_attention", "center_grid", "center_grid_scale", "reference_points"):
+        if key in outputs:
+            predictions[key] = outputs[key].float()
     finite = torch.stack([torch.isfinite(t).all() for t in predictions.values()]).all()
     if not finite:
         samples = ", ".join(f"{t['sequence']}:{t['frame']}" for t in targets)
@@ -132,9 +141,12 @@ def forward_loss(net, criterion, images, targets, device, distributed=False):
         losses["loss_reg"] = (
             losses["loss_reg"] * local_count * dist.get_world_size() / total_count.clamp_min(1)
         )
+        if "loss_center" in losses:
+            losses["loss_center"] = losses["loss_center"] * local_count * dist.get_world_size() / total_count.clamp_min(1)
     # An all-background batch otherwise has no gradient path through the box heads.
     losses["loss"] = (
-        losses["loss_cls"] + losses["loss_reg"] + losses["loss_conf"] + predictions["boxes"].sum() * 0
+        losses["loss_cls"] + losses["loss_reg"] + losses["loss_conf"] +
+        losses.get("loss_center", 0.) + predictions["boxes"].sum() * 0
     )
     return predictions, losses, visible_count
 
@@ -147,7 +159,7 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
     detection = DetectionMetrics(config["model"]["num_classes"])
     exports = {}
     n = visible_total = 0
-    cls = reg = conf = 0.0
+    cls = reg = conf = center = 0.0
     for images, targets in tqdm(loader, desc="Val", unit="batch", disable=not progress):
         outputs, losses, visible_count = forward_loss(net, criterion, images, targets, device)
         n += len(targets)
@@ -155,6 +167,8 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
         cls += losses["loss_cls"].item() * len(targets)
         reg += losses["loss_reg"].item() * visible_count
         conf += losses["loss_conf"].item() * len(targets)
+        if "loss_center" in losses:
+            center += losses["loss_center"].item() * visible_count
         for pred, target in zip(decode(outputs, settings["confidence_threshold"]), targets):
             association.update(pred, target)
             detection.update(pred, target)
@@ -173,5 +187,8 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
             frames = dict(sorted(frames.items(), key=lambda item: int(item[0])))
             (path / f"{key}.json").write_text(json.dumps(frames))
     cls, reg, conf = cls / n, reg / max(visible_total, 1), conf / n
-    return {**association.compute(), **detection.compute(), "samples": n,
-            "losses": dict(loss=cls + reg + conf, classification=cls, regression=reg, confidence=conf)}
+    loss_report = dict(loss=cls + reg + conf, classification=cls, regression=reg, confidence=conf)
+    if config["training"].get("center_loss_weight", 0.):
+        loss_report["center"] = center / max(visible_total, 1)
+        loss_report["loss"] += loss_report["center"]
+    return {**association.compute(), **detection.compute(), "samples": n, "losses": loss_report}

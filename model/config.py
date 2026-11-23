@@ -35,6 +35,7 @@ class ModelConfig:
     # Experimental view-space encoding in MVOQ; "none" preserves old behavior.
     mvoq_position_encoding: str = "none"
     mvoq_instance_residual: bool = False
+    mvoq_center_mode: str = "direct"
     # matching / loss, Eq. (20)-(25)
     cost_class: float = 1.0
     cost_bbox: float = 1.0

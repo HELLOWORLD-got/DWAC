@@ -46,7 +46,8 @@ class SetCriterion(nn.Module):
         self.weight_giou = weight_giou
 
     def forward(
-        self, outputs: dict[str, torch.Tensor], targets: dict[str, torch.Tensor]
+        self, outputs: dict[str, torch.Tensor], targets: dict[str, torch.Tensor],
+        *, return_assignments: bool = False,
     ) -> dict[str, torch.Tensor]:
         class_logits = outputs["class_logits"]  # (B, N, C+1)
         boxes = outputs["boxes"]  # (B, K, N, 4)
@@ -102,12 +103,13 @@ class SetCriterion(nn.Module):
         loss_reg = loss_reg * self.weight_reg
         loss_conf = loss_conf * self.weight_conf
         total = loss_cls + loss_reg + loss_conf
-        return {
+        losses = {
             "loss": total,
             "loss_cls": loss_cls,
             "loss_reg": loss_reg,
             "loss_conf": loss_conf,
         }
+        return (losses, assignments) if return_assignments else losses
 
     def build_targets(self, *args, **kwargs) -> dict[str, torch.Tensor]:
         """Convenience re-export of :func:`model.targets.pad_targets`."""

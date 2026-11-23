@@ -37,6 +37,14 @@ import torch.nn as nn
 from .blocks import FFN, PositionEncoding2D
 
 
+def spatial_grid(height, width, *, device, dtype):
+    """Row-major normalized cell centers, in x,y order."""
+    y = (torch.arange(height, device=device, dtype=dtype) + .5) / height
+    x = (torch.arange(width, device=device, dtype=dtype) + .5) / width
+    yy, xx = torch.meshgrid(y, x, indexing="ij")
+    return torch.stack([xx, yy], dim=-1).flatten(0, 1)
+
+
 class TripletAttentionBlock(nn.Module):
     """One layer of the instance-conditioned query / view-feature attention."""
 
@@ -64,14 +72,15 @@ class TripletAttentionBlock(nn.Module):
         instance_features: torch.Tensor,
         view_tokens: torch.Tensor,
         view_positions: torch.Tensor | None = None,
+        return_attention: bool = False,
     ) -> torch.Tensor:
         conditioned = object_queries + self.instance_projection(instance_features)
         memory = view_tokens if view_positions is None else view_tokens + view_positions
-        attn, _ = self.attn(conditioned, memory, memory, need_weights=False)
+        attn, weights = self.attn(conditioned, memory, memory, need_weights=return_attention)
         residual = conditioned if self.instance_residual else object_queries
         x = self.norm1(residual + self.drop1(attn))
         x = self.norm2(x + self.drop2(self.ffn(x)))
-        return x
+        return (x, weights) if return_attention else x
 
 
 class MultiViewObjectQuery(nn.Module):
@@ -86,8 +95,14 @@ class MultiViewObjectQuery(nn.Module):
         dropout: float = 0.1,
         position_encoding: str = "none",
         instance_residual: bool = False,
+        center_mode: str = "direct",
     ) -> None:
         super().__init__()
+        if center_mode not in ("direct", "attention_reference"):
+            raise ValueError("Unknown MVOQ center mode")
+        if center_mode == "attention_reference" and num_layers < 1:
+            raise ValueError("Attention references require at least one MVOQ layer")
+        self.center_mode = center_mode
         if position_encoding not in ("none", "keys_values", "normalized_keys_values"):
             raise ValueError("Unknown MVOQ position encoding mode")
         self.position_encoding_mode = position_encoding
@@ -128,6 +143,12 @@ class MultiViewObjectQuery(nn.Module):
                 for _ in range(num_views)
             ]
         )
+        if center_mode == "attention_reference":
+            # Start at the spatial reference; only the center rows predict offsets.
+            with torch.no_grad():
+                for head in self.reg_heads:
+                    head[-1].weight[:2].zero_()
+                    head[-1].bias[:2].zero_()
         # Eq. (13): separate confidence head, per view as well.
         self.conf_heads = nn.ModuleList(
             [
@@ -181,19 +202,37 @@ class MultiViewObjectQuery(nn.Module):
                 f"MVOQ was built for N={self.num_queries} queries, got {num_queries}"
             )
 
-        per_view = []
+        per_view, attention_maps, grids = [], [], []
         for k in range(self.num_views):
             view_tokens, positions = self.prepare_view_tokens(single_view_features[k])
             queries = self.object_queries[k].unsqueeze(0).expand(batch, -1, -1)
-            for layer in self.layers:
-                queries = layer(queries, instance_features, view_tokens, positions)
+            for index, layer in enumerate(self.layers):
+                read_attention = self.center_mode == "attention_reference" and index == len(self.layers)-1
+                result = layer(queries, instance_features, view_tokens, positions,
+                               return_attention=read_attention)
+                if read_attention:
+                    queries, attention = result
+                    attention = attention.float().clamp_min(1e-8)
+                    attention = attention / attention.sum(-1, keepdim=True)
+                    attention_maps.append(attention)
+                    grids.append(spatial_grid(*single_view_features[k].shape[-2:],
+                                              device=attention.device, dtype=attention.dtype))
+                else:
+                    queries = result
             per_view.append(queries)
 
         object_features = torch.stack(per_view, dim=1)  # (B, K, N, dim)
-        boxes = torch.stack(
-            [self.reg_heads[k](object_features[:, k]).sigmoid() for k in range(self.num_views)],
-            dim=1,
-        )
+        raw_boxes = [self.reg_heads[k](object_features[:, k]) for k in range(self.num_views)]
+        references = None
+        if self.center_mode == "attention_reference":
+            references = torch.stack([a @ grid for a, grid in zip(attention_maps, grids)], dim=1)
+            boxes = torch.stack([
+                torch.cat([(references[:, k].clamp(1e-5, 1-1e-5).logit() + raw[:, :, :2]).sigmoid(),
+                           raw[:, :, 2:].sigmoid()], dim=-1)
+                for k, raw in enumerate(raw_boxes)
+            ], dim=1)
+        else:
+            boxes = torch.stack([raw.sigmoid() for raw in raw_boxes], dim=1)
         confidences = torch.stack(
             [
                 self.conf_heads[k](object_features[:, k]).sigmoid().squeeze(-1)
@@ -201,8 +240,17 @@ class MultiViewObjectQuery(nn.Module):
             ],
             dim=1,
         )
-        return {
+        output = {
             "boxes": boxes,
             "confidences": confidences,
             "object_features": object_features,
         }
+        if references is not None:
+            # Current fusion requires the same spatial grid for all views.
+            if any(grid.shape != grids[0].shape for grid in grids):
+                raise ValueError("Center attention requires equal view grid sizes")
+            height, width = single_view_features[0].shape[-2:]
+            output.update(center_attention=torch.stack(attention_maps, dim=1),
+                          center_grid=grids[0], center_grid_scale=boxes.new_tensor([width, height]),
+                          reference_points=references)
+        return output

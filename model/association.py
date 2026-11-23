@@ -69,6 +69,7 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             dropout=config.dropout,
             position_encoding=config.mvoq_position_encoding,
             instance_residual=config.mvoq_instance_residual,
+            center_mode=config.mvoq_center_mode,
         )
 
     # ------------------------------------------------------------------ #
@@ -106,7 +107,7 @@ class ConflictFreeMultiViewAssociation(nn.Module):
         # Eq. (4): per-view object queries.
         mvoq_output = self.mvoq(giq_output["instance_features"], view_features)
 
-        return {
+        output = {
             "class_logits": giq_output["class_logits"],
             "class_probs": giq_output["class_probs"],
             "instance_features": giq_output["instance_features"],
@@ -115,6 +116,10 @@ class ConflictFreeMultiViewAssociation(nn.Module):
             "global_feature": global_feature,
             "view_features": view_features,
         }
+        for key in ("center_attention", "center_grid", "center_grid_scale", "reference_points"):
+            if key in mvoq_output:
+                output[key] = mvoq_output[key]
+        return output
 
     # ------------------------------------------------------------------ #
     @torch.no_grad()
