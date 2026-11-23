@@ -69,7 +69,7 @@ def run(args, config, device, rank, world):
                         limit=args.limit_train, rank=rank, world=world)
     val = (make_loader(config, "val", device, batch_size=batch, workers=workers,
                        limit=args.limit_val) if rank == 0 else None)
-    print(f"[rank {rank}] building author's model ...", flush=True)
+    print(f"[rank {rank}] building model ...", flush=True)
     raw = build_model(config, initialize_weights=checkpoint is None and rank == 0).to(device)
     if checkpoint is not None:
         raw.load_state_dict(checkpoint["model"])

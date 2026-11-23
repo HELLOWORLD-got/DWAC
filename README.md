@@ -1,5 +1,7 @@
 # Detection With Association Constraints · MDMT
 
+当前完整数据中心监督实验：参见 [完整 MDMT 实验](FULL_MDMT_EXPERIMENT.md)，启动命令为 `bash tools/run_full_center_training.sh`。
+
 `model/` 是作者更新提交
 [`e2076af`](https://github.com/yyyyyxq/Instance-based-Association/tree/e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a/model)
 中的源码为基础。当前仅修正了 `predict(class_threshold=...)` 放行背景类别的问题；
