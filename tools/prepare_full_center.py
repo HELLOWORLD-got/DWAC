@@ -89,7 +89,7 @@ def main():
     # Preserve the working architecture and optimizer; expand only data/capacity.
     config['data'].update(height=416, width=720, augment=False)
     config['training'].update(epochs=15, batch_size=4, workers=4, seed=42,
-                              limit_train=None, limit_val=None)
+                              limit_train=None, limit_val=None, clip_grad=1.0)
     root = Path(args.data_dir)
     report = {'queries':256, 'annotations_truncated':False, 'splits':{}}
     manifests = {'train':root/'train.jsonl', 'val':root/'val.jsonl', 'test':root/'test_official.jsonl'}

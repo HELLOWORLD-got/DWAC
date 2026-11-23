@@ -42,7 +42,7 @@
     "seed": 42,
     "freeze_bn_stats": true,
     "background_weight": 0.1,
-    "clip_grad": null,
+    "clip_grad": 1.0,
     "limit_train": null,
     "limit_val": null,
     "freeze_backbone_stem": false,

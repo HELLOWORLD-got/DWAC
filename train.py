@@ -4,6 +4,7 @@ import argparse
 import json
 import sys
 import time
+import math
 from dataclasses import asdict
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from training import distributed
 from model import ModelConfig
 from training.engine import build_criterion, build_model, evaluate, forward_loss, load_config, make_loader
 from training.engine import freeze_training_bn, seed_all
+from training.gradients import clip_gradients, gradient_report
 
 
 def save_checkpoint(path, checkpoint):
@@ -38,6 +40,7 @@ def run(args, config, device, rank, world):
     checkpoint = None
     start = 0
     best = (-1.0, -1.0)
+    optimization_changes = None
     if args.resume:
         last = output / "last.pt"
         if last.exists() and Path(args.resume).resolve() != last.resolve():
@@ -50,7 +53,8 @@ def run(args, config, device, rank, world):
             raise ValueError("Resume requires the same model, data and evaluation settings")
         for key in ("batch_size", "lr", "weight_decay", "seed", "freeze_bn_stats",
                     "clip_grad", "limit_train", "limit_val"):
-            if train_settings[key] != saved["training"][key]:
+            if (train_settings[key] != saved["training"][key] and
+                    not (args.allow_optimization_change and key in ("lr", "clip_grad"))):
                 raise ValueError(f"Resume changed training setting {key}")
         if train_settings["background_weight"] != saved["training"].get("background_weight", 1.0):
             raise ValueError("Resume requires the same background weight")
@@ -60,6 +64,16 @@ def run(args, config, device, rank, world):
             raise ValueError("Resume requires the same center supervision weight")
         start = checkpoint["epoch"]
         best = tuple(checkpoint["best"])
+        changed = {key: dict(old=saved['training'].get(key), new=train_settings.get(key))
+                   for key in ('lr', 'clip_grad') if saved['training'].get(key) != train_settings.get(key)}
+        optimization_changes = checkpoint.get('optimization_changes')
+        if changed:
+            if output.resolve() == Path(args.resume).resolve().parent:
+                raise ValueError('Optimization changes require a new --output directory')
+            optimization_changes = dict(source_checkpoint=str(Path(args.resume).resolve()),
+                                        source_epoch=start, changes=changed,
+                                        source_validation=checkpoint.get('validation'))
+            best = (-1., -1.)  # best among the new optimization stage's epochs
     if start >= train_settings["epochs"]:
         if rank == 0:
             print(f"Checkpoint already completed {start} epochs.")
@@ -82,12 +96,17 @@ def run(args, config, device, rank, world):
     )
     if checkpoint is not None:
         optimizer.load_state_dict(checkpoint["optimizer"])
+        if args.allow_optimization_change:
+            for group in optimizer.param_groups:
+                group['lr'] = train_settings['lr']
         distributed.restore_rng(checkpoint, device, rank, world)
         del checkpoint
     if rank == 0:
         output.mkdir(parents=True, exist_ok=True)
         (output / "config.json").write_text(json.dumps(config, indent=2) + "\n")
         (output / "invocation.json").write_text(json.dumps(vars(args), indent=2) + "\n")
+        if optimization_changes:
+            (output / 'optimization_changes.json').write_text(json.dumps(optimization_changes, indent=2)+'\n')
         print(f"{world} process(es), global batch={batch}, per-rank batch={local_batch}, "
               f"train={len(train.dataset)}, val={len(val.dataset)}, FP32", flush=True)
 
@@ -98,6 +117,8 @@ def run(args, config, device, rank, world):
         freeze_training_bn(raw, config)
         began = time.monotonic()
         total_loss = 0.0
+        grad_norm_max = 0.
+        norm_overflow_recoveries = 0
         component_names = ("loss_cls", "loss_reg", "loss_conf", "loss_center")
         component_sums = [0.0] * len(component_names)
         samples = 0
@@ -107,18 +128,44 @@ def run(args, config, device, rank, world):
                   dynamic_ncols=True, disable=not show_bar) as batches:
             for index, (images, targets) in enumerate(batches, 1):
                 optimizer.zero_grad(set_to_none=True)
+                phase = 'forward'
+                losses = {}
+                failure_rng = distributed.capture_rng(device) if args.save_failure_batch else None
                 try:
                     _, losses, _ = forward_loss(model, criterion, images, targets, device, world > 1)
                     loss = losses["loss"]
                     if not torch.isfinite(loss):
                         raise FloatingPointError("non-finite loss")
+                    phase = 'backward'
                     loss.backward()
                     # An infinite cap checks the gradient norm while preserving
                     # finite gradients when clipping was not requested.
                     cap = args.clip_grad if args.clip_grad is not None else float("inf")
-                    torch.nn.utils.clip_grad_norm_(raw.parameters(), cap, error_if_nonfinite=True)
+                    phase = 'gradient_check'
+                    grad_norm, overflow = clip_gradients(raw.named_parameters(), cap)
+                    grad_norm_max = max(grad_norm_max, grad_norm)
+                    norm_overflow_recoveries += int(overflow)
+                    phase = 'optimizer_step'
                     optimizer.step()
                 except (ValueError, FloatingPointError, RuntimeError) as exc:
+                    try:
+                        report = dict(rank=rank, epoch=epoch, batch=index, phase=phase, error=str(exc),
+                                      samples=[dict(sequence=t['sequence'], frame=t['frame'],
+                                                    instances=len(t['labels']), images=t.get('images')) for t in targets],
+                                      losses={k: (float(v.detach()) if torch.isfinite(v.detach()) else None)
+                                              for k, v in losses.items()},
+                                      gradients=getattr(exc, 'diagnostics', None) or gradient_report(raw.named_parameters()))
+                        output.mkdir(parents=True, exist_ok=True)
+                        failure_path = output/f'failure_rank{rank}_epoch{epoch}_batch{index}'
+                        failure_path.with_suffix('.json').write_text(json.dumps(report, indent=2, allow_nan=False)+'\n')
+                        if args.save_failure_batch:
+                            save_checkpoint(failure_path.with_suffix('.pt'),
+                                            dict(model={k:v.detach().cpu() for k,v in raw.state_dict().items()},
+                                                 config=config, images=images, targets=targets, rng=failure_rng,
+                                                 rank=rank, world_size=world, epoch=epoch, batch=index))
+                        print(f'Failure diagnostics saved: {failure_path}', flush=True)
+                    except Exception as diagnostic_error:
+                        print(f'Could not save failure diagnostics: {diagnostic_error}', flush=True)
                     raise RuntimeError(f"rank={rank}, epoch={epoch}, batch={index}: {exc}") from exc
                 value = loss.item()
                 total_loss += value * len(targets)
@@ -148,6 +195,8 @@ def run(args, config, device, rank, world):
                           train_samples_per_second=float(totals[1]) / train_seconds,
                           rank0_train_peak_allocated_gib=train_peak,
                           elapsed_seconds=time.monotonic() - began, validation=result)
+            record.update(rank0_grad_norm_max=grad_norm_max,
+                          rank0_norm_overflow_recoveries=norm_overflow_recoveries)
             record["train_losses"] = {
                 name: float(totals[index+2] / totals[1])
                 for index, name in enumerate(("classification", "regression", "confidence", "center"))
@@ -158,6 +207,8 @@ def run(args, config, device, rank, world):
             state = dict(model=raw.state_dict(), optimizer=optimizer.state_dict(),
                          config=config, epoch=epoch, best=best,
                          rank_rng_states=states, world_size=world, validation=result)
+            if optimization_changes:
+                state['optimization_changes'] = optimization_changes
             if improved:
                 save_checkpoint(output / "best.pt", state)
             save_checkpoint(output / "last.pt", state)
@@ -177,6 +228,10 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--output")
     parser.add_argument("--resume")
+    parser.add_argument('--allow-optimization-change', action='store_true',
+                        help='Allow LR/clip changes on resume into a NEW output directory')
+    parser.add_argument('--save-failure-batch', action='store_true',
+                        help='Save model and input batch for backward-error replay')
     parser.add_argument("--epochs", type=int)
     parser.add_argument("--batch-size", type=int, help="Global batch across all ranks")
     parser.add_argument("--workers", type=int, help="DataLoader workers per rank")
@@ -187,6 +242,8 @@ def main():
     parser.add_argument("--random-init", action="store_true")
     parser.add_argument("--progress", choices=("auto", "bar", "log"), default="auto")
     args = parser.parse_args()
+    if args.allow_optimization_change and not args.resume:
+        parser.error('--allow-optimization-change requires --resume')
     config = load_config(args.config)
     training = config["training"]
     if args.background_weight is not None:
@@ -206,6 +263,9 @@ def main():
     if args.clip_grad is None:
         args.clip_grad = training.get("clip_grad")
     training["clip_grad"] = args.clip_grad
+    if (not math.isfinite(training['lr']) or training['lr'] <= 0 or
+            (args.clip_grad is not None and not math.isfinite(args.clip_grad))):
+        parser.error('Learning rate and clipping cap must be finite and positive')
     training["limit_train"] = args.limit_train if args.limit_train is not None else training.get("limit_train")
     training["limit_val"] = args.limit_val if args.limit_val is not None else training.get("limit_val")
     args.limit_train, args.limit_val = training["limit_train"], training["limit_val"]
