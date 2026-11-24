@@ -15,7 +15,8 @@ from model import ModelConfig, pad_targets
 from model.box_ops import box_loss,box_loss_pairwise
 from model.loss import SetCriterion
 from model.matcher import HungarianMatcher
-from training.data import MultiViewDataset,collate
+from training.data import MultiViewDataset,collate,read_tracks
+from tools.prepare_data import audit_native_categories, prepare, prepare_official_test
 from training.engine import build_model,build_criterion,forward_loss,freeze_training_bn,load_config
 from training.metrics import AssociationMetrics,DetectionMetrics,decode
 from training.distributed import capture_rng,per_rank_batch_size
@@ -130,6 +131,94 @@ class AuthorTrainingTests(unittest.TestCase):
     def test_batch_size_is_global(self):
         self.assertEqual(per_rank_batch_size(4,2),2)
         with self.assertRaises(ValueError):per_rank_batch_size(4,8)
+
+    def test_xml_categories_are_preserved_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'labels.xml'
+            p.write_text('<annotations><track id="7" label="car"><box frame="0" outside="0" xtl="2" ytl="2" xbr="8" ybr="8"/></track><track id="9" label="person"><box frame="0" outside="0" xtl="10" ytl="2" xbr="15" ybr="8"/></track></annotations>')
+            frames,_,_=read_tracks(p,20,20)
+            self.assertEqual(frames[0][7]['label'],1)
+            self.assertEqual(frames[0][9]['label'],0)
+
+    def test_native_conflicts_fail_before_manifest_overwrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'raw';out=Path(tmp)/'out';out.mkdir()
+            for split in ('train','val','test'):
+                for v in (1,2):(root/split/str(v)).mkdir(parents=True)
+            for v,label in [(1,'person'),(2,'car')]:
+                (root/'train'/str(v)/f'23-{v}').mkdir()
+                xml=root/'new_xml'/str(v)/f'23-{v}.xml';xml.parent.mkdir(parents=True)
+                xml.write_text(f'<annotations><track id="7" label="{label}"><box frame="0" outside="0" xtl="1" ytl="1" xbr="4" ybr="4"/></track></annotations>')
+            r=audit_native_categories(root);self.assertEqual(r['conflict_count'],1)
+            self.assertEqual(r['simultaneous_conflict_count'],1)
+            (out/'train.jsonl').write_text('existing-data')
+            with self.assertRaisesRegex(ValueError,'Native labels conflict'):prepare(root,out,class_mode='native')
+            self.assertEqual((out/'train.jsonl').read_text(),'existing-data')
+
+    def test_four_class_author_loss_uses_background_index_four(self):
+        boxes=torch.tensor([[[.4,.4,.2,.2]],[[.4,.4,.2,.2]]])
+        p=pad_targets([torch.tensor([1])],[boxes],[torch.ones(2,1,dtype=torch.bool)],2,4)
+        self.assertEqual(p['labels'].tolist(),[[1,4]])
+        logits=torch.full((1,2,5),-8.);logits[0,0,1]=8.;logits[0,1,4]=8.
+        out=dict(class_logits=logits,boxes=p['boxes'],confidences=p['visibility']*.98+.01)
+        loss=SetCriterion(4,HungarianMatcher())(out,p)
+        self.assertLess(float(loss['loss_cls']),1e-5)
+        self.assertAlmostEqual(float(loss['loss_reg']),0.,places=6)
+        pred=decode(out)[0];self.assertEqual(int(pred['labels'][0]),1)
+        self.assertFalse(bool(pred['present'][:,1].any()))
+
+    def test_car_only_parser_drops_non_car_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'labels.xml'
+            p.write_text('<annotations>'+''.join(
+                f'<track id="{i}" label="{label}"><box frame="0" outside="0" xtl="2" ytl="2" xbr="8" ybr="8"/></track>'
+                for i,label in enumerate(['car','person','bus','bicycle']))+'</annotations>')
+            frames,labels,_=read_tracks(p,20,20,class_mode='car_only')
+            self.assertEqual(set(frames[0]),{0});self.assertEqual(labels,{0:'car'})
+            self.assertEqual(frames[0][0]['label'],0)
+
+    def test_car_filter_keeps_complete_groups_and_empty_negatives(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'raw';out=Path(tmp)/'prepared'
+            def track(identity,label,frames):
+                return f'<track id="{identity}" label="{label}">'+''.join(
+                    f'<box frame="{f}" outside="0" xtl="2" ytl="2" xbr="8" ybr="8"/>' for f in frames)+'</track>'
+            for split,seq in [('train','1'),('val','2'),('test','3')]:
+                for v in (1,2):
+                    images=root/split/str(v)/f'{seq}-{v}';images.mkdir(parents=True)
+                    for i in range(1,5):Image.new('RGB',(20,20)).save(images/f'{i:08}.jpg')
+                    tracks=track(7,'car',[0])+track(99,'person',[0,1,2,3])+track(100,'bus',[1])
+                    tracks+=track(13,'car' if v==1 else 'person',[0])
+                    tracks+=track(8 if v==1 else 9,'car',[1])
+                    tracks+=track(10 if v==1 else 12,'car',[2])
+                    if v==1:tracks+=track(11,'car',[2])
+                    xml=root/'new_xml'/str(v)/f'{seq}-{v}.xml';xml.parent.mkdir(parents=True,exist_ok=True)
+                    xml.write_text('<annotations>'+tracks+'</annotations>')
+            with contextlib.redirect_stdout(io.StringIO()):r=prepare(root,out,class_mode='car_only',max_instances=2)
+            rows=[json.loads(x) for x in (out/'train.jsonl').read_text().splitlines()]
+            self.assertEqual([s['frame'] for s in rows],[0,1,3])
+            self.assertEqual(rows[0]['ids'],[7,13]);self.assertEqual(rows[0]['visible'],[[True,True],[True,False]])
+            self.assertEqual(rows[1]['ids'],[8,9])
+            self.assertEqual(rows[2]['ids'],[])
+            self.assertEqual(r['splits']['train']['excluded_over_query_limit'],1)
+            self.assertEqual(r['splits']['train']['empty_target_frames'],1)
+            self.assertFalse(r['ground_truth_truncated'])
+            ds=MultiViewDataset(out/'train.jsonl',size=(20,20),num_classes=1,num_queries=2,class_mode='car_only')
+            self.assertEqual(len(ds[2][1]['labels']),0)
+
+    def test_official_txt_cannot_replace_car_only_labels(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);manifest=root/'car.jsonl'
+            manifest.write_text(json.dumps(dict(class_mode='car_only',labels=[0]))+'\n')
+            with self.assertRaisesRegex(ValueError,'discard native classes'):
+                prepare_official_test(manifest,root/'gt',root/'official.jsonl')
+
+    def test_car_only_export_rejects_all_object_official_scoring(self):
+        from tools.score_official_mda import score
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'_metadata.json').write_text(json.dumps(dict(class_mode='car_only')))
+            with self.assertRaisesRegex(ValueError,'all-object official TXT'):
+                score(root,root/'gt','reference/mdmt_official/mango_eval.py')
 
 
 if __name__=='__main__':unittest.main()

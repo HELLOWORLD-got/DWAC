@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from model import ModelConfig, TrainConfig, build_model as build_author_model
 from model import pad_targets
-from .data import MultiViewDataset, collate
+from .data import MultiViewDataset, collate, NATIVE_CLASSES
 from .metrics import AssociationMetrics, DetectionMetrics, decode, xyxy
 
 
@@ -33,6 +33,19 @@ def author_model_config(config):
 def load_config(path):
     data = json.loads(Path(path).read_text())
     data["model"] = asdict(author_model_config(data))
+    if data["data"].get("class_mode") == "car_only":
+        if (data["model"]["num_classes"] != 1 or data["data"].get("class_mapping") != {"car": 0}):
+            raise ValueError("Car-only config requires one foreground class car=0 and author no-object background=1")
+        if (data["data"].get("query_limit_policy") != "filter_groups" or
+                data["data"].get("max_instances") != data["model"]["num_queries"]):
+            raise ValueError("Car-only data capacity must match queries; only complete groups are supported")
+    if data["data"].get("class_mode") == "native":
+        if (data["model"]["num_classes"] != len(NATIVE_CLASSES) or
+                data["data"].get("class_mapping") != NATIVE_CLASSES):
+            raise ValueError("Native MDMT config must preserve the observed XML category mapping")
+        audit = Path(data["data"]["train"]).parent / "native_category_audit.json"
+        if audit.exists() and not json.loads(audit.read_text())["ready_for_native_training"]:
+            raise ValueError(f"Native category/ID conflicts remain unresolved; see {audit}. Obtain the author's corrected labels/mapping.")
     data["author_commit"] = "e2076afc7f59d9f82e17bc31cd8ddcf9a047fb5a"
     defaults = {**asdict(TrainConfig()), "workers": 4, "seed": 42,
                 "freeze_bn_stats": True, "clip_grad": 1.0,
@@ -100,6 +113,7 @@ def make_loader(config, split, device, *, batch_size, workers, limit=None, rank=
         num_views=config["model"]["num_views"],
         num_classes=config["model"]["num_classes"],
         num_queries=config["model"]["num_queries"],
+        class_mode=config["data"].get("class_mode"),
         augment=split == "train" and config["data"]["augment"],
         limit=limit,
     )
@@ -181,6 +195,12 @@ def evaluate(net, criterion, loader, config, device, *, progress=False, export=N
         for key, frames in exports.items():
             frames = dict(sorted(frames.items(), key=lambda item: int(item[0])))
             (path / f"{key}.json").write_text(json.dumps(frames))
+        (path / "_metadata.json").write_text(json.dumps(dict(
+            class_mode=config["data"].get("class_mode"),
+            class_mapping=config["data"].get("class_mapping"),
+            query_limit_policy=config["data"].get("query_limit_policy"),
+            note="Evaluation GT must use the same target classes and retained frames."
+        ), indent=2) + "\n")
     cls, reg, conf = cls / n, reg / max(visible_total, 1), conf / n
     loss_report = dict(loss=cls + reg + conf, classification=cls, regression=reg, confidence=conf)
     return {**association.compute(), **detection.compute(), "samples": n, "losses": loss_report}

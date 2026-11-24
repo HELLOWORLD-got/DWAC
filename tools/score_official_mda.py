@@ -13,6 +13,9 @@ from pathlib import Path
 
 
 def score(predictions, ground_truth, source):
+    metadata = Path(predictions) / "_metadata.json"
+    if metadata.exists() and json.loads(metadata.read_text()).get("class_mode") == "car_only":
+        raise ValueError("Car-only predictions cannot be scored against all-object official TXT; use matching car-only XML evaluation")
     spec = importlib.util.spec_from_file_location("mdmt_official_eval", source)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

@@ -37,6 +37,7 @@ def main():
     for split in ('train','val','test'):
         ds=MultiViewDataset(config['data'][split],size=(config['data']['height'],config['data']['width']),
                             num_views=config['model']['num_views'],num_queries=config['model']['num_queries'],
+                            class_mode=config['data'].get('class_mode'),
                             num_classes=config['model']['num_classes'],augment=False)
         seq=set();dense=0;maximum=-1
         for i in range(len(ds)):

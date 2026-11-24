@@ -3,15 +3,21 @@
     "backbone": "vit_b16",
     "num_views": 2,
     "num_classes": 1,
-    "num_queries": 256
+    "num_queries": 25
   },
   "data": {
-    "train": "data/processed/MDMT/train.jsonl",
-    "val": "data/processed/MDMT/val.jsonl",
-    "test": "data/processed/MDMT/test_official.jsonl",
+    "train": "data/processed/MDMT_car_q25/train.jsonl",
+    "val": "data/processed/MDMT_car_q25/val.jsonl",
+    "test": "data/processed/MDMT_car_q25/test.jsonl",
     "height": 416,
     "width": 720,
-    "augment": true
+    "augment": true,
+    "class_mode": "car_only",
+    "class_mapping": {
+      "car": 0
+    },
+    "max_instances": 25,
+    "query_limit_policy": "filter_groups"
   },
   "training": {
     "epochs": 100,

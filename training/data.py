@@ -7,17 +7,24 @@ from collections import defaultdict
 import xml.etree.ElementTree as ET
 
 
-def read_tracks(path, width, height, class_mode="agnostic"):
+NATIVE_CLASSES = {"person": 0, "car": 1, "bicycle": 2, "bus": 3}
+
+
+def read_tracks(path, width, height, class_mode="native"):
     frames = defaultdict(dict)
     labels = {}
     stats = defaultdict(int)
-    classes = {"person": 0, "car": 1, "bicycle": 2, "bus": 3}
+    classes = NATIVE_CLASSES
+    if class_mode not in ("native", "agnostic", "car_only"):
+        raise ValueError("class_mode must be native, agnostic or car_only")
     for track in ET.parse(path).getroot().findall("track"):
         identity = int(track.attrib["id"])
         name = track.attrib["label"]
         if name not in classes:
             raise ValueError(f"Unknown category {name} in {path}")
-        label = 0 if class_mode == "agnostic" else classes[name]
+        if class_mode == "car_only" and name != "car":
+            continue
+        label = 0 if class_mode in ("agnostic", "car_only") else classes[name]
         labels[identity] = name
         stats["tracks_" + name] += 1
         for box in track.findall("box"):
@@ -81,6 +88,7 @@ class MultiViewDataset(Dataset):
         num_queries=None,
         limit=None,
         num_classes=None,
+        class_mode=None,
     ):
         self.path = Path(manifest).resolve()
         self.size, self.num_views, self.augment = tuple(size), num_views, augment
@@ -106,6 +114,8 @@ class MultiViewDataset(Dataset):
         self.max_instances = 0
         for i in range(len(self)):
             s = self.record(i)
+            if class_mode is not None and s.get("class_mode") != class_mode:
+                raise ValueError(f"{self.path.name}: expected explicitly {class_mode} labels; do not reuse merged-class manifests")
             self.max_instances = max(self.max_instances, len(s["labels"]))
             if num_classes is not None and any(x < 0 or x >= num_classes for x in s["labels"]):
                 raise ValueError("Manifest categories incompatible with model")
